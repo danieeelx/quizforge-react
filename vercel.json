@@ -1,5 +1,10 @@
 {
   "buildCommand": "echo \"Using prebuilt dist\"",
   "outputDirectory": "dist",
-  "installCommand": "echo \"No install needed\""
+  "installCommand": "echo \"No install needed\"",
+  "functions": {
+    "api/ai-import.mjs": {
+      "maxDuration": 60
+    }
+  }
 }

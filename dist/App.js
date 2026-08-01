@@ -1,21 +1,80 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ArchiveRestore, BarChart3, BookOpen, Check, ChevronLeft, ChevronRight, CheckCircle2, CircleHelp, Clock3, Copy, FileText, Filter, Flag, FolderOpen, GripVertical, Home, Image, Layers3, Library, ListFilter, Menu, Moon, Plus, ScanText, Search, Sparkles, Sun, Tag, Target, Trash2, Upload, WandSparkles, X } from "lucide-react";
-import { createDemoSet } from "./data/demo.js";
-import { combinePastedQuestionsAndAnswers } from "./lib/paste.js";
-import { extractImageText, extractPdfText } from "./lib/pdf.js";
+import { AlertTriangle, ArchiveRestore, BarChart3, BookOpen, Check, ChevronLeft, ChevronRight, CheckCircle2, CircleHelp, Clock3, Copy, FileText, Filter, Flag, FolderOpen, Home, Layers3, Library, ListFilter, Menu, Moon, Plus, Search, Sparkles, Sun, Scissors, Users, Snowflake, Lightbulb, Bot, ShieldCheck, Tag, Target, Trash2, Upload, WandSparkles, X } from "lucide-react";
+import { extractPdfText } from "./lib/pdf.js";
 import { generateLocalQuestions, parseQuestionBankDetailed } from "./lib/parser.js";
 import { clearExamRecovery, clearUploadDraft, loadExamRecovery, loadStudySets, loadTheme, loadUploadDraft, saveExamRecovery, saveStudySets, saveTheme, saveUploadDraft } from "./lib/storage.js";
 import { bestScore, formatDate, formatDuration, shuffle, stripExtension, uid } from "./lib/utils.js";
 import { availableTopics, computeTopicPerformance, ensureQuestionTopics, weakTopics } from "./lib/topics.js";
 import { validateQuestions } from "./lib/validation.js";
+function createPasteAnswer(text = "", correct = false) {
+    return { id: uid(), text, correct };
+}
 function createPasteSection() {
     return {
         id: uid(),
         title: "",
-        questions: "",
-        answers: ""
+        topic: "General",
+        question: "",
+        answers: [createPasteAnswer(), createPasteAnswer(), createPasteAnswer(), createPasteAnswer()],
+        selectionMode: "single",
+        activeTab: "question",
+        expanded: true
     };
+}
+function normalizePasteSections(rawSections) {
+    if (!Array.isArray(rawSections) || rawSections.length === 0)
+        return [createPasteSection()];
+    const normalized = rawSections.map((rawValue) => {
+        const raw = (rawValue && typeof rawValue === "object" ? rawValue : {});
+        const rawAnswers = raw.answers;
+        if (typeof raw.question === "string" && Array.isArray(rawAnswers)) {
+            const answers = rawAnswers
+                .filter((answer) => Boolean(answer && typeof answer === "object"))
+                .map((answer) => ({
+                id: typeof answer.id === "string" ? answer.id : uid(),
+                text: typeof answer.text === "string" ? answer.text : "",
+                correct: Boolean(answer.correct)
+            }));
+            while (answers.length < 2)
+                answers.push(createPasteAnswer());
+            return {
+                id: typeof raw.id === "string" ? raw.id : uid(),
+                title: typeof raw.title === "string" ? raw.title : "",
+                topic: typeof raw.topic === "string" && raw.topic.trim() ? raw.topic : "General",
+                question: raw.question,
+                answers,
+                selectionMode: raw.selectionMode === "multiple" ? "multiple" : "single",
+                activeTab: raw.activeTab === "answers" ? "answers" : "question",
+                expanded: raw.expanded !== false
+            };
+        }
+        // Migrate the old bulk Questions + Answers browser draft into one editable card.
+        const legacyQuestion = typeof raw.questions === "string" ? raw.questions : "";
+        const legacyAnswerText = typeof rawAnswers === "string" ? rawAnswers : "";
+        const legacyAnswers = legacyAnswerText
+            .split(/\n+/)
+            .map((line) => line.replace(/^\s*(?:\d+\s*[.)-]?\s*)?/, "").trim())
+            .filter(Boolean)
+            .slice(0, 8)
+            .map((line) => createPasteAnswer(line));
+        while (legacyAnswers.length < 4)
+            legacyAnswers.push(createPasteAnswer());
+        return {
+            id: typeof raw.id === "string" ? raw.id : uid(),
+            title: typeof raw.title === "string" ? raw.title : "",
+            topic: typeof raw.title === "string" && raw.title.trim() ? raw.title : "General",
+            question: legacyQuestion,
+            answers: legacyAnswers,
+            selectionMode: "single",
+            activeTab: "question",
+            expanded: true
+        };
+    });
+    if (!normalized.length)
+        return [createPasteSection()];
+    const firstExpanded = normalized.findIndex((section) => section.expanded);
+    return normalized.map((section, index) => ({ ...section, expanded: firstExpanded === -1 ? index === 0 : index === firstExpanded }));
 }
 function getCorrectIds(question) {
     if (Array.isArray(question.correctOptionIds) && question.correctOptionIds.length)
@@ -58,26 +117,27 @@ const defaultSettings = {
     minutes: 30,
     showExplanations: true,
     topicFilter: "All topics",
-    weakAreasOnly: false
+    weakAreasOnly: false,
+    lifelineFiftyFifty: true,
+    lifelineAudiencePoll: true,
+    lifelineTimeFreeze: true,
+    lifelineClue: true
 };
 function App() {
     const [view, setView] = useState("dashboard");
     const [theme, setTheme] = useState(() => loadTheme());
     const [sidebarOpen, setSidebarOpen] = useState(false);
-    const [studySets, setStudySets] = useState(() => {
-        const stored = loadStudySets();
-        return stored.length ? stored : [createDemoSet()];
-    });
+    const [studySets, setStudySets] = useState(() => loadStudySets());
     const [initialUploadDraft] = useState(() => loadUploadDraft());
     const [initialExamRecovery] = useState(() => loadExamRecovery());
     const [activeSetId, setActiveSetId] = useState(null);
     const [editingQuestionId, setEditingQuestionId] = useState(null);
     const [selectedFile, setSelectedFile] = useState(null);
     const [recoveredFileName, setRecoveredFileName] = useState(initialUploadDraft?.fileName ?? "");
-    const [pasteSections, setPasteSections] = useState(() => initialUploadDraft?.pasteSections?.length ? initialUploadDraft.pasteSections : [createPasteSection()]);
+    const [pasteSections, setPasteSections] = useState(() => normalizePasteSections(initialUploadDraft?.pasteSections));
     const [studyTitle, setStudyTitle] = useState(initialUploadDraft?.title ?? "");
     const [aiEnhanced, setAiEnhanced] = useState(initialUploadDraft?.aiEnhanced ?? false);
-    const [ocrEnabled, setOcrEnabled] = useState(initialUploadDraft?.ocrEnabled ?? true);
+    const [ocrEnabled] = useState(false);
     const [aiConfigured, setAiConfigured] = useState(false);
     const [dragging, setDragging] = useState(false);
     const [processingProgress, setProcessingProgress] = useState(0);
@@ -87,7 +147,6 @@ function App() {
     const [exam, setExam] = useState(null);
     const [resultDetails, setResultDetails] = useState([]);
     const [toast, setToast] = useState(initialUploadDraft ? "Your unfinished paste draft was recovered" : "");
-    const [importSummary, setImportSummary] = useState(null);
     const [pendingImport, setPendingImport] = useState(null);
     const [submitReviewOpen, setSubmitReviewOpen] = useState(false);
     const [recoveryAvailable, setRecoveryAvailable] = useState(Boolean(initialExamRecovery));
@@ -104,7 +163,7 @@ function App() {
         saveStudySets(studySets);
     }, [studySets]);
     useEffect(() => {
-        const hasDraftContent = Boolean(studyTitle.trim() || pasteSections.some((section) => section.title.trim() || section.questions.trim() || section.answers.trim()) || selectedFile);
+        const hasDraftContent = Boolean(studyTitle.trim() || pasteSections.some((section) => section.title.trim() || section.question.trim() || section.answers.some((answer) => answer.text.trim())) || selectedFile);
         if (!hasDraftContent)
             return;
         saveUploadDraft({
@@ -142,7 +201,14 @@ function App() {
             return;
         }
         const timer = window.setInterval(() => {
-            setExam((current) => current ? { ...current, remainingSeconds: Math.max(0, current.remainingSeconds - 1) } : current);
+            setExam((current) => {
+                if (!current)
+                    return current;
+                const frozenUntil = current.lifelines?.timerFrozenUntil ?? 0;
+                if (frozenUntil > Date.now())
+                    return { ...current };
+                return { ...current, remainingSeconds: Math.max(0, current.remainingSeconds - 1) };
+            });
         }, 1000);
         return () => window.clearInterval(timer);
     }, [view, exam?.remainingSeconds, settings.timed]);
@@ -174,7 +240,6 @@ function App() {
         setPasteSections([createPasteSection()]);
         setStudyTitle("");
         setAiEnhanced(false);
-        setOcrEnabled(true);
         clearUploadDraft();
         setToast("Draft cleared");
     }
@@ -201,12 +266,17 @@ function App() {
         navigate("exam");
     }
     function updatePasteSection(id, patch) {
-        setPasteSections((current) => current.map((section) => section.id === id ? { ...section, ...patch } : section));
+        setPasteSections((current) => current.map((section) => {
+            if (patch.expanded === true)
+                return section.id === id ? { ...section, ...patch } : { ...section, expanded: false };
+            return section.id === id ? { ...section, ...patch } : section;
+        }));
     }
     function addPasteSection() {
-        setPasteSections((current) => [...current, createPasteSection()]);
+        const section = createPasteSection();
+        setPasteSections((current) => [...current.map((item) => ({ ...item, expanded: false })), section]);
         window.setTimeout(() => {
-            document.querySelector(".paste-section-card:last-of-type")?.scrollIntoView({ behavior: "smooth", block: "center" });
+            document.querySelector(".manual-question-card:last-of-type")?.scrollIntoView({ behavior: "smooth", block: "center" });
         }, 60);
     }
     function removePasteSection(id) {
@@ -215,35 +285,31 @@ function App() {
             : current.filter((section) => section.id !== id));
     }
     async function createStudySet() {
-        const populatedSections = pasteSections.filter((section) => section.questions.trim().length >= 10);
+        const populatedSections = pasteSections.filter((section) => section.question.trim().length >= 3);
         if (!selectedFile && !populatedSections.length) {
-            setError("Choose a PDF/image or paste questions into at least one section first.");
+            setError("Choose a PDF/image or add at least one question first.");
             return;
         }
         setError("");
         setProcessingProgress(4);
         setProcessingStep("read");
-        setProcessingLabel("Reading document text");
+        setProcessingLabel("Reading your study material");
         navigate("processing");
         try {
             const parsedImports = [];
             const sourceParts = [];
             const importedQuestions = [];
-            let sourceName = populatedSections.length > 1 ? `${populatedSections.length} pasted sections` : "Pasted study material";
+            let sourceName = populatedSections.length > 1
+                ? `${populatedSections.length} manually added questions`
+                : "Manually added question";
             if (selectedFile) {
-                sourceName = selectedFile.name;
-                const isImageFile = selectedFile.type.startsWith("image/") || /\.(png|jpe?g|webp)$/i.test(selectedFile.name);
-                const extractedText = isImageFile
-                    ? await extractImageText(selectedFile, ({ progress, stage, page, totalPages }) => {
-                        setProcessingLabel(stage === "ocr" ? `OCR scanning image ${page} of ${totalPages}` : "Reading image text");
-                        setProcessingProgress(Math.max(5, Math.min(52, Math.round(progress * 0.52))));
-                    })
-                    : await extractPdfText(selectedFile, ({ progress, stage, page, totalPages }) => {
-                        setProcessingLabel(stage === "ocr" ? `OCR scanning page ${page} of ${totalPages}` : `Reading page ${page} of ${totalPages}`);
-                        setProcessingProgress(Math.max(5, Math.min(52, Math.round(progress * 0.52))));
-                    }, { enableOcr: ocrEnabled });
+                sourceName = populatedSections.length ? `${selectedFile.name} + ${populatedSections.length} manual question${populatedSections.length === 1 ? "" : "s"}` : selectedFile.name;
+                const extractedText = await extractPdfText(selectedFile, ({ progress, page, totalPages }) => {
+                    setProcessingLabel(`Reading page ${page} of ${totalPages}`);
+                    setProcessingProgress(Math.max(5, Math.min(52, Math.round(progress * 0.52))));
+                }, { enableOcr: false });
                 if (extractedText.replace(/\s/g, "").length < 30) {
-                    throw new Error("This file did not produce enough readable text. Turn on OCR or try a clearer scan.");
+                    throw new Error("This PDF has little or no selectable text. Scanned-PDF OCR is not enabled yet, so try a text-based PDF or add the questions manually.");
                 }
                 sourceParts.push(extractedText);
                 const parsedFile = parseQuestionBankDetailed(extractedText);
@@ -251,45 +317,77 @@ function App() {
                 importedQuestions.push(...parsedFile.questions);
             }
             setProcessingStep("detect");
-            setProcessingLabel("Detecting questions and choices");
+            setProcessingLabel("Preparing questions and answer choices");
             setProcessingProgress(58);
-            for (const section of populatedSections) {
-                const sectionText = combinePastedQuestionsAndAnswers(section.questions, section.answers);
-                sourceParts.push(sectionText);
-                const parsedSection = parseQuestionBankDetailed(sectionText);
-                const sectionQuestions = parsedSection.questions.map((question) => ({
-                    ...question,
-                    topic: section.title.trim() || question.topic
-                }));
-                parsedImports.push({ ...parsedSection, questions: sectionQuestions });
-                importedQuestions.push(...sectionQuestions);
-            }
+            const manualQuestions = populatedSections.map((section, sectionIndex) => {
+                const enteredAnswers = section.answers.filter((answer) => answer.text.trim());
+                const optionDrafts = enteredAnswers.length >= 2 ? enteredAnswers : section.answers.slice(0, Math.max(2, section.answers.length));
+                const options = optionDrafts.map((answer) => ({ id: uid(), text: answer.text.trim() }));
+                const correctOptionIds = options
+                    .filter((_, optionIndex) => optionDrafts[optionIndex]?.correct)
+                    .map((option) => option.id);
+                const topic = section.topic.trim() || section.title.trim() || "General";
+                const question = {
+                    id: uid(),
+                    question: section.question.trim(),
+                    options,
+                    correctOptionId: correctOptionIds[0] ?? null,
+                    correctOptionIds,
+                    selectionMode: section.selectionMode === "multiple" || correctOptionIds.length > 1 ? "multiple" : "single",
+                    explanation: "",
+                    status: correctOptionIds.length ? "verified" : "review",
+                    topic,
+                    importWarnings: options.length < 2 ? ["Add at least two answer choices."] : undefined
+                };
+                const sourceLines = [
+                    `${sectionIndex + 1}. ${section.question.trim()}`,
+                    ...optionDrafts.map((answer, answerIndex) => `${String.fromCharCode(65 + answerIndex)}. ${answer.text.trim()}`),
+                    correctOptionIds.length
+                        ? `Answer: ${optionDrafts.map((answer, answerIndex) => answer.correct ? String.fromCharCode(65 + answerIndex) : "").filter(Boolean).join(", ")}`
+                        : ""
+                ].filter(Boolean);
+                sourceParts.push(sourceLines.join("\n"));
+                return question;
+            });
+            importedQuestions.push(...manualQuestions);
             const sourceText = sourceParts.join("\n\n");
             let questions = ensureQuestionTopics(dedupeImportedQuestions(importedQuestions));
+            const aiWarnings = [];
             setProcessingStep("answers");
-            setProcessingLabel("Matching answers and checking structure");
+            setProcessingLabel(aiEnhanced ? "AI is reviewing the import" : "Matching answers and checking structure");
             setProcessingProgress(72);
             if (aiEnhanced) {
-                questions = ensureQuestionTopics(await generateWithAi(sourceText, studyTitle || stripExtension(sourceName)));
+                try {
+                    const assisted = await assistImportWithAi(sourceText, questions, studyTitle || stripExtension(sourceName));
+                    questions = ensureQuestionTopics(assisted.questions);
+                    aiWarnings.push(...assisted.warnings);
+                }
+                catch (aiError) {
+                    const message = aiError instanceof Error ? aiError.message : "AI import assistance was unavailable.";
+                    aiWarnings.push(`AI assistance could not complete: ${message} Local extraction was kept.`);
+                    if (!questions.length && sourceText.trim())
+                        questions = ensureQuestionTopics(generateLocalQuestions(sourceText));
+                }
             }
-            else if (questions.length < 2) {
+            else if (!questions.length && sourceText.trim()) {
                 questions = ensureQuestionTopics(generateLocalQuestions(sourceText));
             }
             if (!questions.length) {
-                throw new Error("No usable questions were found. Try a clearer question bank, paste content, or enable AI generation.");
+                throw new Error("No usable questions were found. Try a clearer question bank, add a manual question, or enable AI import assistance.");
             }
             setProcessingStep("finish");
             setProcessingLabel("Preparing import preview");
             setProcessingProgress(94);
             await delay(350);
-            const expected = parsedImports.reduce((sum, parsed) => sum + (parsed.detectedQuestionNumbers.length || parsed.highestQuestionNumber || parsed.questions.length), 0);
-            const parserWarnings = [...new Set(parsedImports.flatMap((parsed) => parsed.warnings))];
-            const issues = validateQuestions(questions, aiEnhanced ? questions.length : expected || questions.length);
+            const parsedExpected = parsedImports.reduce((sum, parsed) => sum + (parsed.detectedQuestionNumbers.length || parsed.highestQuestionNumber || parsed.questions.length), 0);
+            const expected = parsedExpected + manualQuestions.length;
+            const parserWarnings = [...new Set([...parsedImports.flatMap((parsed) => parsed.warnings), ...aiWarnings])];
+            const issues = validateQuestions(questions, expected || questions.length);
             setPendingImport({
                 title: studyTitle.trim() || stripExtension(sourceName),
                 sourceName,
                 questions,
-                expected: aiEnhanced ? questions.length : expected || questions.length,
+                expected: expected || questions.length,
                 parserWarnings,
                 selectedIds: questions.map((question) => question.id),
                 issues
@@ -369,13 +467,6 @@ function App() {
         setStudySets((current) => [set, ...current]);
         setActiveSetId(set.id);
         setEditingQuestionId(set.questions[0]?.id ?? null);
-        setImportSummary({
-            title: set.title,
-            extracted: questions.length,
-            expected: pendingImport.expected,
-            verified: questions.filter(isVerifiedQuestion).length,
-            warnings: pendingImport.issues.filter((issue) => issue.severity !== "info").slice(0, 3).map((issue) => issue.message)
-        });
         clearUploadDraft();
         setSelectedFile(null);
         setRecoveredFileName("");
@@ -385,29 +476,87 @@ function App() {
         setToast(`${questions.length} questions added`);
         navigate("editor");
     }
-    async function generateWithAi(text, title) {
-        const response = await fetch("/api/generate", {
+    async function assistImportWithAi(sourceText, questions, title) {
+        const response = await fetch("/api/ai-import", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text, title })
+            body: JSON.stringify({
+                title,
+                sourceText,
+                questions: questions.map((question) => ({
+                    clientId: question.id,
+                    question: question.question,
+                    options: question.options.map((option) => option.text),
+                    correctIndexes: getCorrectIds(question)
+                        .map((id) => question.options.findIndex((option) => option.id === id))
+                        .filter((index) => index >= 0),
+                    selectionMode: isMultipleQuestion(question) ? "multiple" : "single",
+                    explanation: question.explanation,
+                    topic: question.topic ?? "General",
+                    sourcePage: question.sourcePage ?? null,
+                    importWarnings: question.importWarnings ?? []
+                }))
+            })
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok || !payload.questions) {
-            throw new Error(payload.error || "AI generation failed. Disable AI-enhanced generation and try local extraction.");
+            throw new Error(payload.error || "AI import assistance failed.");
         }
-        return payload.questions.map((question) => {
-            const options = question.options.map((text) => ({ id: uid(), text }));
+        const existingById = new Map(questions.map((question) => [question.id, question]));
+        const returnedIds = new Set();
+        const repaired = payload.questions.map((item) => {
+            returnedIds.add(item.clientId);
+            const existing = existingById.get(item.clientId);
+            const optionTexts = Array.isArray(item.options) ? item.options.filter((text) => String(text).trim()).slice(0, 8) : [];
+            const options = optionTexts.map((text, index) => ({
+                id: existing?.options[index]?.id ?? uid(),
+                text: String(text).trim()
+            }));
+            const correctOptionIds = [...new Set((item.correctIndexes ?? [])
+                    .filter((index) => Number.isInteger(index) && index >= 0 && index < options.length)
+                    .map((index) => options[index].id))];
+            const confidence = Math.max(0, Math.min(1, Number(item.confidence) || 0));
+            const notes = Array.isArray(item.changes) ? item.changes.filter(Boolean).slice(0, 8) : [];
+            const reviewRequired = Boolean(item.reviewRequired) || confidence < 0.75 || correctOptionIds.length === 0;
             return {
-                id: uid(),
-                question: question.question,
-                options,
-                correctOptionId: options[question.correctIndex]?.id ?? null,
-                correctOptionIds: options[question.correctIndex] ? [options[question.correctIndex].id] : [],
-                selectionMode: "single",
-                explanation: question.explanation ?? "",
-                status: options[question.correctIndex] ? "verified" : "review"
+                id: existing?.id ?? uid(),
+                question: String(item.question || existing?.question || "Untitled question").trim(),
+                options: options.length >= 2 ? options : existing?.options ?? options,
+                correctOptionId: correctOptionIds[0] ?? null,
+                correctOptionIds,
+                selectionMode: item.selectionMode === "multiple" || correctOptionIds.length > 1 ? "multiple" : "single",
+                explanation: String(item.explanation || existing?.explanation || "").trim(),
+                status: reviewRequired ? "review" : "verified",
+                sourcePage: item.sourcePage ?? existing?.sourcePage,
+                topic: String(item.topic || existing?.topic || "General").trim() || "General",
+                importWarnings: [
+                    ...(existing?.importWarnings ?? []),
+                    ...notes,
+                    ...(confidence < 0.75 ? [`AI confidence is ${Math.round(confidence * 100)}%; verify this question.`] : [])
+                ].filter(Boolean),
+                aiConfidence: confidence,
+                aiChanged: Boolean(item.changed),
+                aiNotes: notes
             };
         });
+        const missing = questions
+            .filter((question) => !returnedIds.has(question.id))
+            .map((question) => ({
+            ...question,
+            status: "review",
+            importWarnings: [...(question.importWarnings ?? []), "AI did not return this question; local extraction was preserved for review."],
+            aiConfidence: 0,
+            aiChanged: false,
+            aiNotes: ["Local extraction preserved"]
+        }));
+        const summary = payload.summary;
+        const summaryNote = summary
+            ? `AI reviewed ${summary.reviewed}, repaired ${summary.repaired}, generated ${summary.generated}, and flagged ${summary.lowConfidence} low-confidence question${summary.lowConfidence === 1 ? "" : "s"}.`
+            : "AI import assistance completed.";
+        return {
+            questions: [...repaired, ...missing],
+            warnings: [summaryNote, ...(payload.warnings ?? [])]
+        };
     }
     function updateActiveSet(updater) {
         if (!activeSetId)
@@ -619,7 +768,16 @@ function App() {
             flagged: {},
             currentIndex: 0,
             startedAt: Date.now(),
-            remainingSeconds: settings.timed ? settings.minutes * 60 : 0
+            remainingSeconds: settings.timed ? settings.minutes * 60 : 0,
+            lifelines: {
+                fiftyFiftyUsed: false,
+                audiencePollUsed: false,
+                timeFreezeUsed: false,
+                clueUsed: false,
+                removedOptionIds: {},
+                audiencePolls: {},
+                clues: {}
+            }
         };
         setExam(session);
         setResultDetails([]);
@@ -649,6 +807,148 @@ function App() {
         if (!exam)
             return;
         setExam({ ...exam, currentIndex: Math.min(Math.max(index, 0), exam.questions.length - 1) });
+    }
+    function useFiftyFifty() {
+        if (!exam || !settings.lifelineFiftyFifty)
+            return;
+        const question = exam.questions[exam.currentIndex];
+        const lifelines = exam.lifelines;
+        if (lifelines?.fiftyFiftyUsed) {
+            setToast("50:50 has already been used in this exam");
+            return;
+        }
+        if (isMultipleQuestion(question)) {
+            setToast("50:50 is available only for single-answer questions");
+            return;
+        }
+        const correctIds = new Set(getCorrectIds(question));
+        const selected = new Set(exam.responses[question.id] ?? []);
+        const wrong = question.options.filter((option) => !correctIds.has(option.id));
+        if (wrong.length <= 1) {
+            setToast("This question already has only two choices");
+            return;
+        }
+        const preferred = wrong.filter((option) => !selected.has(option.id));
+        const candidates = [...shuffle(preferred), ...shuffle(wrong.filter((option) => selected.has(option.id)))];
+        const removeCount = Math.max(1, question.options.length - 2);
+        const removed = candidates.slice(0, removeCount).map((option) => option.id);
+        setExam({
+            ...exam,
+            responses: { ...exam.responses, [question.id]: (exam.responses[question.id] ?? []).filter((id) => !removed.includes(id)) },
+            lifelines: {
+                fiftyFiftyUsed: true,
+                audiencePollUsed: lifelines?.audiencePollUsed ?? false,
+                timeFreezeUsed: lifelines?.timeFreezeUsed ?? false,
+                clueUsed: lifelines?.clueUsed ?? false,
+                removedOptionIds: { ...(lifelines?.removedOptionIds ?? {}), [question.id]: removed },
+                audiencePolls: lifelines?.audiencePolls ?? {},
+                clues: lifelines?.clues ?? {},
+                timerFrozenUntil: lifelines?.timerFrozenUntil
+            }
+        });
+        setToast("50:50 removed two incorrect choices");
+    }
+    function useAudiencePoll() {
+        if (!exam || !settings.lifelineAudiencePoll)
+            return;
+        const question = exam.questions[exam.currentIndex];
+        const lifelines = exam.lifelines;
+        if (lifelines?.audiencePollUsed) {
+            setToast("Audience Poll has already been used in this exam");
+            return;
+        }
+        if (isMultipleQuestion(question)) {
+            setToast("Audience Poll is available only for single-answer questions");
+            return;
+        }
+        const removed = new Set(lifelines?.removedOptionIds?.[question.id] ?? []);
+        const visible = question.options.filter((option) => !removed.has(option.id));
+        const correctId = getCorrectIds(question)[0];
+        if (!correctId || visible.length < 2)
+            return;
+        const correctPercent = visible.length === 2
+            ? 68 + Math.floor(Math.random() * 18)
+            : 52 + Math.floor(Math.random() * 24);
+        const wrong = visible.filter((option) => option.id !== correctId);
+        const remainder = 100 - correctPercent;
+        const weights = wrong.map(() => Math.random() + 0.25);
+        const weightTotal = weights.reduce((sum, value) => sum + value, 0);
+        const allocations = weights.map((weight) => Math.floor((weight / weightTotal) * remainder));
+        let unassigned = remainder - allocations.reduce((sum, value) => sum + value, 0);
+        for (let index = 0; unassigned > 0 && wrong.length > 0; index = (index + 1) % wrong.length) {
+            allocations[index] += 1;
+            unassigned -= 1;
+        }
+        const poll = { [correctId]: correctPercent };
+        wrong.forEach((option, index) => { poll[option.id] = allocations[index] ?? 0; });
+        setExam({
+            ...exam,
+            lifelines: {
+                fiftyFiftyUsed: lifelines?.fiftyFiftyUsed ?? false,
+                audiencePollUsed: true,
+                timeFreezeUsed: lifelines?.timeFreezeUsed ?? false,
+                clueUsed: lifelines?.clueUsed ?? false,
+                removedOptionIds: lifelines?.removedOptionIds ?? {},
+                audiencePolls: { ...(lifelines?.audiencePolls ?? {}), [question.id]: poll },
+                clues: lifelines?.clues ?? {},
+                timerFrozenUntil: lifelines?.timerFrozenUntil
+            }
+        });
+        setToast("The audience has voted");
+    }
+    function useTimeFreeze() {
+        if (!exam || !settings.lifelineTimeFreeze)
+            return;
+        if (!settings.timed) {
+            setToast("Time Freeze is available only in timed exams");
+            return;
+        }
+        const lifelines = exam.lifelines;
+        if (lifelines?.timeFreezeUsed) {
+            setToast("Time Freeze has already been used in this exam");
+            return;
+        }
+        setExam({
+            ...exam,
+            lifelines: {
+                fiftyFiftyUsed: lifelines?.fiftyFiftyUsed ?? false,
+                audiencePollUsed: lifelines?.audiencePollUsed ?? false,
+                timeFreezeUsed: true,
+                clueUsed: lifelines?.clueUsed ?? false,
+                removedOptionIds: lifelines?.removedOptionIds ?? {},
+                audiencePolls: lifelines?.audiencePolls ?? {},
+                clues: lifelines?.clues ?? {},
+                timerFrozenUntil: Date.now() + 60_000
+            }
+        });
+        setToast("Timer frozen for 60 seconds");
+    }
+    function useClue() {
+        if (!exam || !settings.lifelineClue)
+            return;
+        const question = exam.questions[exam.currentIndex];
+        const lifelines = exam.lifelines;
+        if (lifelines?.clueUsed) {
+            setToast("Clue has already been used in this exam");
+            return;
+        }
+        const clue = question.explanation.trim()
+            || [question.sourcePage ? `Review source page ${question.sourcePage}.` : "", question.topic ? `Focus on the ${question.topic} concept.` : ""].filter(Boolean).join(" ")
+            || "Compare each choice with the exact wording of the question and eliminate answers that introduce unrelated details.";
+        setExam({
+            ...exam,
+            lifelines: {
+                fiftyFiftyUsed: lifelines?.fiftyFiftyUsed ?? false,
+                audiencePollUsed: lifelines?.audiencePollUsed ?? false,
+                timeFreezeUsed: lifelines?.timeFreezeUsed ?? false,
+                clueUsed: true,
+                removedOptionIds: lifelines?.removedOptionIds ?? {},
+                audiencePolls: lifelines?.audiencePolls ?? {},
+                clues: { ...(lifelines?.clues ?? {}), [question.id]: clue },
+                timerFrozenUntil: lifelines?.timerFrozenUntil
+            }
+        });
+        setToast("Clue revealed");
     }
     function requestExamSubmit() {
         if (!exam)
@@ -696,30 +996,26 @@ function App() {
     }
     const allAttempts = useMemo(() => studySets.flatMap((set) => set.attempts.map((attempt) => ({ ...attempt, setTitle: set.title }))), [studySets]);
     const averageScore = allAttempts.length ? Math.round(allAttempts.reduce((sum, attempt) => sum + attempt.score, 0) / allAttempts.length) : 0;
-    return (_jsxs("div", { className: "app-root", children: [view === "exam" ? (_jsx(ExamView, { exam: exam, settings: settings, onAnswer: answerQuestion, onFlag: toggleFlag, onMove: moveQuestion, onSubmit: requestExamSubmit, reviewOpen: submitReviewOpen, onCloseReview: () => setSubmitReviewOpen(false), onConfirmSubmit: () => finalizeExam(false) })) : view === "results" ? (_jsx(ResultsView, { details: resultDetails, settings: settings, exam: exam, onRetake: () => beginExam(), onRetakeWrong: () => beginExam(resultDetails.filter((detail) => !detail.correct).map((detail) => detail.question.id)), onDashboard: () => navigate("dashboard") })) : (_jsxs(Shell, { view: view, theme: theme, sidebarOpen: sidebarOpen, onToggleSidebar: () => setSidebarOpen((current) => !current), onNavigate: navigate, onTheme: toggleTheme, onNew: newStudySet, children: [view === "dashboard" && (_jsx(Dashboard, { studySets: studySets, attempts: allAttempts.length, averageScore: averageScore, onNew: newStudySet, onOpen: openSet, onNavigate: navigate, recoveryAvailable: recoveryAvailable, onResumeExam: resumeRecoveredExam })), view === "library" && (_jsx(LibraryView, { studySets: studySets, search: search, onSearch: setSearch, onOpen: openSet, onNew: newStudySet })), view === "performance" && _jsx(PerformanceView, { studySets: studySets, attempts: allAttempts, averageScore: averageScore }), view === "upload" && (_jsx(UploadView, { file: selectedFile, pasteSections: pasteSections, title: studyTitle, dragging: dragging, aiEnhanced: aiEnhanced, aiConfigured: aiConfigured, ocrEnabled: ocrEnabled, recoveredFileName: recoveredFileName, error: error, fileInputRef: fileInputRef, onFile: (file) => { setSelectedFile(file); if (file)
-                            setRecoveredFileName(""); }, onUpdatePasteSection: updatePasteSection, onAddPasteSection: addPasteSection, onRemovePasteSection: removePasteSection, onTitle: setStudyTitle, onDragging: setDragging, onAi: setAiEnhanced, onOcr: setOcrEnabled, onClearDraft: clearStudyDraft, onCreate: createStudySet, onCancel: () => navigate("dashboard") })), view === "processing" && (_jsx(ProcessingView, { fileName: selectedFile?.name || (pasteSections.filter((section) => section.questions.trim()).length > 1
-                            ? `${pasteSections.filter((section) => section.questions.trim()).length} pasted sections`
-                            : pasteSections.find((section) => section.questions.trim())?.title || "Pasted study material"), progress: processingProgress, step: processingStep, activeLabel: processingLabel })), view === "import-preview" && pendingImport && (_jsx(ImportPreviewView, { pending: pendingImport, onToggle: togglePendingQuestion, onSelectMode: selectPendingQuestions, onUpdateQuestion: updatePendingQuestion, onUpdateAnswer: updatePendingAnswer, onBack: () => navigate("upload"), onConfirm: confirmPendingImport })), view === "editor" && activeSet && editingQuestion && (_jsx(EditorView, { studySet: activeSet, question: editingQuestion, onSelect: setEditingQuestionId, onUpdateQuestion: updateQuestion, onUpdateOption: updateOption, onMarkCorrect: markCorrect, onSelectionMode: setSelectionMode, onAddOption: addOption, onRemoveOption: removeOption, onAddQuestion: addQuestion, onDuplicate: duplicateQuestion, onDelete: deleteQuestion, onBulkDelete: bulkDeleteQuestions, onBulkStatus: bulkSetStatus, onBulkTopic: bulkSetTopic, onDeleteSet: deleteStudySet, onSetup: openSetup, onDashboard: () => navigate("dashboard") })), view === "setup" && activeSet && (_jsx(SetupView, { studySet: activeSet, settings: settings, onSettings: setSettings, onBack: () => navigate("editor"), onStart: () => beginExam() }))] })), toast && _jsxs("div", { className: "toast", role: "status", children: [_jsx("span", { className: "toast-icon", children: _jsx(Check, { size: 15 }) }), _jsx("span", { children: toast }), _jsx("i", {})] }), importSummary && _jsx(ImportSummaryModal, { summary: importSummary, onClose: () => setImportSummary(null) })] }));
-}
-function ImportSummaryModal({ summary, onClose }) {
-    const complete = summary.expected === summary.extracted && summary.warnings.length === 0;
-    return (_jsx("div", { className: "modal-backdrop", role: "presentation", children: _jsxs("section", { className: "import-modal", role: "dialog", "aria-modal": "true", "aria-labelledby": "import-title", children: [_jsxs("div", { className: `modal-success-orb ${complete ? "complete" : "warning"}`, children: [complete ? _jsx(Check, { size: 29 }) : _jsx(CircleHelp, { size: 29 }), _jsx("span", { className: "orb-ring" })] }), _jsx("button", { className: "modal-close", type: "button", "aria-label": "Close import summary", onClick: onClose, children: _jsx(X, { size: 18 }) }), _jsx("p", { className: "eyebrow", children: "PDF IMPORT COMPLETE" }), _jsx("h2", { id: "import-title", children: complete ? "Everything lined up." : "Import finished with notes." }), _jsxs("p", { className: "modal-copy", children: ["\u201C", summary.title, "\u201D is ready for review. QuizForge compared the extracted items with the numbering found in the PDF."] }), _jsxs("div", { className: "import-stats", children: [_jsxs("div", { children: [_jsx("strong", { children: summary.extracted }), _jsx("small", { children: "Questions extracted" })] }), _jsxs("div", { children: [_jsx("strong", { children: summary.expected }), _jsx("small", { children: "Numbered in PDF" })] }), _jsxs("div", { children: [_jsx("strong", { children: summary.verified }), _jsx("small", { children: "Answers detected" })] })] }), summary.warnings.length > 0 && (_jsx("div", { className: "modal-warning-list", children: summary.warnings.slice(0, 3).map((warning) => _jsxs("p", { children: [_jsx(CircleHelp, { size: 14 }), " ", warning] }, warning)) })), _jsxs("button", { className: "primary-button modal-primary", type: "button", onClick: onClose, children: ["Review questions ", _jsx(ChevronRight, { size: 16 })] })] }) }));
+    return (_jsxs("div", { className: "app-root", children: [view === "exam" ? (_jsx(ExamView, { exam: exam, settings: settings, onAnswer: answerQuestion, onFlag: toggleFlag, onMove: moveQuestion, onSubmit: requestExamSubmit, reviewOpen: submitReviewOpen, onCloseReview: () => setSubmitReviewOpen(false), onConfirmSubmit: () => finalizeExam(false), onFiftyFifty: useFiftyFifty, onAudiencePoll: useAudiencePoll, onTimeFreeze: useTimeFreeze, onClue: useClue })) : view === "results" ? (_jsx(ResultsView, { details: resultDetails, settings: settings, exam: exam, onRetake: () => beginExam(), onRetakeWrong: () => beginExam(resultDetails.filter((detail) => !detail.correct).map((detail) => detail.question.id)), onDashboard: () => navigate("dashboard") })) : (_jsxs(Shell, { view: view, theme: theme, sidebarOpen: sidebarOpen, onToggleSidebar: () => setSidebarOpen((current) => !current), onNavigate: navigate, onTheme: toggleTheme, onNew: newStudySet, children: [view === "dashboard" && (_jsx(Dashboard, { studySets: studySets, attempts: allAttempts.length, averageScore: averageScore, onNew: newStudySet, onOpen: openSet, onNavigate: navigate, recoveryAvailable: recoveryAvailable, onResumeExam: resumeRecoveredExam })), view === "library" && (_jsx(LibraryView, { studySets: studySets, search: search, onSearch: setSearch, onOpen: openSet, onNew: newStudySet })), view === "performance" && _jsx(PerformanceView, { studySets: studySets, attempts: allAttempts, averageScore: averageScore }), view === "upload" && (_jsx(UploadView, { file: selectedFile, pasteSections: pasteSections, title: studyTitle, dragging: dragging, aiEnhanced: aiEnhanced, aiConfigured: aiConfigured, recoveredFileName: recoveredFileName, error: error, fileInputRef: fileInputRef, onFile: (file) => { setSelectedFile(file); if (file)
+                            setRecoveredFileName(""); }, onUpdatePasteSection: updatePasteSection, onAddPasteSection: addPasteSection, onRemovePasteSection: removePasteSection, onTitle: setStudyTitle, onDragging: setDragging, onAi: setAiEnhanced, onClearDraft: clearStudyDraft, onCreate: createStudySet, onCancel: () => navigate("dashboard") })), view === "processing" && (_jsx(ProcessingView, { fileName: selectedFile?.name || (pasteSections.filter((section) => section.question.trim()).length > 1
+                            ? `${pasteSections.filter((section) => section.question.trim()).length} manual questions`
+                            : pasteSections.find((section) => section.question.trim())?.title || "Manually added question"), progress: processingProgress, step: processingStep, activeLabel: processingLabel })), view === "import-preview" && pendingImport && (_jsx(ImportPreviewView, { pending: pendingImport, onToggle: togglePendingQuestion, onSelectMode: selectPendingQuestions, onUpdateQuestion: updatePendingQuestion, onUpdateAnswer: updatePendingAnswer, onBack: () => navigate("upload"), onConfirm: confirmPendingImport })), view === "editor" && activeSet && editingQuestion && (_jsx(EditorView, { studySet: activeSet, question: editingQuestion, onSelect: setEditingQuestionId, onUpdateQuestion: updateQuestion, onUpdateOption: updateOption, onMarkCorrect: markCorrect, onSelectionMode: setSelectionMode, onAddOption: addOption, onRemoveOption: removeOption, onAddQuestion: addQuestion, onDuplicate: duplicateQuestion, onDelete: deleteQuestion, onBulkDelete: bulkDeleteQuestions, onBulkStatus: bulkSetStatus, onBulkTopic: bulkSetTopic, onDeleteSet: deleteStudySet, onSetup: openSetup, onDashboard: () => navigate("dashboard") })), view === "setup" && activeSet && (_jsx(SetupView, { studySet: activeSet, settings: settings, onSettings: setSettings, onBack: () => navigate("editor"), onStart: () => beginExam() }))] })), toast && _jsxs("div", { className: "toast", role: "status", children: [_jsx("span", { className: "toast-icon", children: _jsx(Check, { size: 15 }) }), _jsx("span", { children: toast }), _jsx("i", {})] })] }));
 }
 function Shell({ view, theme, sidebarOpen, children, onToggleSidebar, onNavigate, onTheme, onNew }) {
     const nav = [
-        { id: "dashboard", label: "Dashboard", icon: Home },
-        { id: "library", label: "Study sets", icon: Library },
+        { id: "dashboard", label: "Home", icon: Home },
+        { id: "library", label: "Library", icon: Library },
         { id: "performance", label: "Performance", icon: BarChart3 }
     ];
-    return (_jsxs("div", { className: "app-shell", children: [_jsx("button", { className: "mobile-menu", type: "button", "aria-label": "Toggle navigation", onClick: onToggleSidebar, children: _jsx(Menu, { size: 20 }) }), sidebarOpen && _jsx("button", { className: "sidebar-scrim", type: "button", "aria-label": "Close navigation", onClick: onToggleSidebar }), _jsxs("aside", { className: `sidebar ${sidebarOpen ? "open" : ""}`, children: [_jsxs("button", { className: "brand", type: "button", onClick: () => onNavigate("dashboard"), children: [_jsx("span", { className: "brand-mark", children: "Q" }), _jsxs("span", { children: [_jsx("strong", { children: "QuizForge" }), _jsx("small", { children: "Study smarter" })] })] }), _jsx("nav", { className: "side-nav", "aria-label": "Main navigation", children: nav.map((item) => {
+    return (_jsxs("div", { className: "app-shell", children: [_jsx("button", { className: "mobile-menu", type: "button", "aria-label": "Toggle navigation", onClick: onToggleSidebar, children: _jsx(Menu, { size: 20 }) }), sidebarOpen && _jsx("button", { className: "sidebar-scrim", type: "button", "aria-label": "Close navigation", onClick: onToggleSidebar }), _jsxs("aside", { className: `sidebar streamlined-sidebar ${sidebarOpen ? "open" : ""}`, children: [_jsxs("button", { className: "brand", type: "button", onClick: () => onNavigate("dashboard"), children: [_jsx("span", { className: "brand-mark", children: "Q" }), _jsxs("span", { children: [_jsx("strong", { children: "QuizForge" }), _jsx("small", { children: "Study smarter" })] })] }), _jsx("nav", { className: "side-nav", "aria-label": "Main navigation", children: nav.map((item) => {
                             const Icon = item.icon;
-                            return (_jsxs("button", { type: "button", className: `nav-item ${view === item.id ? "active" : ""}`, onClick: () => onNavigate(item.id), children: [_jsx(Icon, { size: 18 }), _jsx("span", { children: item.label })] }, item.id));
-                        }) }), _jsxs("div", { className: "sidebar-card", children: [_jsx(Sparkles, { size: 18 }), _jsx("strong", { children: "AI study mode" }), _jsx("p", { children: "Generate questions from notes when your server API key is configured." }), _jsx("button", { type: "button", onClick: onNew, children: "Try it" })] }), _jsxs("div", { className: "profile", children: [_jsx("span", { className: "avatar", children: "D" }), _jsxs("span", { children: [_jsx("strong", { children: "Daniel" }), _jsx("small", { children: "Local workspace" })] })] })] }), _jsxs("main", { className: "main-content", children: [_jsxs("header", { className: "global-topbar", children: [_jsxs("div", { className: "mobile-brand", children: [_jsx("span", { className: "brand-mark", children: "Q" }), _jsx("strong", { children: "QuizForge" })] }), _jsxs("div", { className: "global-actions", children: [_jsx("button", { className: "icon-button", type: "button", "aria-label": "Toggle theme", onClick: onTheme, children: theme === "dark" ? _jsx(Sun, { size: 18 }) : _jsx(Moon, { size: 18 }) }), _jsxs("button", { className: "primary-button compact", type: "button", onClick: onNew, children: [_jsx(Plus, { size: 17 }), " New study set"] })] })] }), _jsx("div", { className: "view-transition", children: children }, view)] })] }));
+                            return _jsxs("button", { type: "button", className: `nav-item ${view === item.id ? "active" : ""}`, onClick: () => onNavigate(item.id), children: [_jsx(Icon, { size: 18 }), _jsx("span", { children: item.label })] }, item.id);
+                        }) }), _jsxs("button", { className: "primary-button sidebar-create-button", type: "button", onClick: onNew, children: [_jsx(Plus, { size: 17 }), " Create study set"] }), _jsx("div", { className: "sidebar-spacer" }), _jsxs("p", { className: "local-workspace-note", children: [_jsx(CheckCircle2, { size: 15 }), " Saved locally in this browser"] })] }), _jsxs("main", { className: "main-content", children: [_jsxs("header", { className: "global-topbar simplified-topbar", children: [_jsxs("div", { className: "mobile-brand", children: [_jsx("span", { className: "brand-mark", children: "Q" }), _jsx("strong", { children: "QuizForge" })] }), _jsx("div", { className: "global-actions", children: _jsx("button", { className: "icon-button", type: "button", "aria-label": "Toggle theme", onClick: onTheme, children: theme === "dark" ? _jsx(Sun, { size: 18 }) : _jsx(Moon, { size: 18 }) }) })] }), _jsx("div", { className: "view-transition", children: children }, view)] })] }));
 }
 function Dashboard({ studySets, attempts, averageScore, onNew, onOpen, onNavigate, recoveryAvailable, onResumeExam }) {
     const recent = studySets.slice(0, 3);
     const totalQuestions = studySets.reduce((sum, set) => sum + set.questions.length, 0);
-    return (_jsxs("div", { className: "page-wrap dashboard-page", children: [_jsx("section", { className: "welcome-row", children: _jsxs("div", { children: [_jsx("p", { className: "eyebrow", children: "YOUR PERSONAL EXAM BUILDER" }), _jsx("h1", { children: "Welcome back, Daniel" }), _jsx("p", { children: "Create a new test or continue one of your saved study sets." })] }) }), recoveryAvailable && _jsxs("section", { className: "recovery-banner", children: [_jsx("span", { className: "recovery-icon", children: _jsx(ArchiveRestore, { size: 20 }) }), _jsxs("div", { children: [_jsx("strong", { children: "Unfinished exam recovered" }), _jsx("p", { children: "Your answers, timer, flags, and current question were saved automatically." })] }), _jsxs("button", { className: "primary-button compact", type: "button", onClick: onResumeExam, children: ["Resume exam ", _jsx(ChevronRight, { size: 15 })] })] }), _jsxs("section", { className: "hero-card", children: [_jsxs("div", { className: "hero-copy", children: [_jsxs("span", { className: "pill", children: [_jsx(Sparkles, { size: 14 }), " AI-POWERED STUDY"] }), _jsxs("h2", { children: ["Turn any PDF into a ", _jsx("em", { children: "practice exam." })] }), _jsx("p", { children: "Upload a reviewer, lecture notes, or a question bank. QuizForge extracts questions, identifies available answers, and builds a customizable mock test." }), _jsxs("div", { className: "hero-actions", children: [_jsxs("button", { className: "primary-button large", type: "button", onClick: onNew, children: [_jsx(Upload, { size: 18 }), " Upload PDF ", _jsx(ChevronRight, { size: 17 })] }), _jsxs("button", { className: "secondary-button large", type: "button", onClick: onNew, children: [_jsx(FileText, { size: 18 }), " Paste text"] })] }), _jsxs("div", { className: "privacy-line", children: [_jsx(Check, { size: 15 }), " PDF extraction happens in your browser"] })] }), _jsxs("div", { className: "upload-visual", "aria-hidden": "true", children: [_jsx("div", { className: "upload-orbit orbit-one" }), _jsx("div", { className: "upload-orbit orbit-two" }), _jsxs("div", { className: "file-card rear", children: [_jsx("span", { children: "PDF" }), _jsx("i", {}), _jsx("i", {}), _jsx("i", {})] }), _jsxs("div", { className: "file-card front", children: [_jsx("div", { className: "file-icon", children: "PDF" }), _jsx("strong", { children: "Reviewer.pdf" }), _jsx("small", { children: "Ready to transform" }), _jsx("div", { className: "mini-progress", children: _jsx("span", {}) })] }), _jsx("div", { className: "floating-chip chip-one", children: "24 questions" }), _jsxs("div", { className: "floating-chip chip-two", children: ["Answer key found ", _jsx(Check, { size: 12 })] })] })] }), _jsxs("section", { className: "metric-grid", "aria-label": "Study overview", children: [_jsx(Metric, { label: "Study sets", value: studySets.length, note: "Saved locally", icon: _jsx(BookOpen, { size: 18 }) }), _jsx(Metric, { label: "Questions", value: totalQuestions, note: "Across your library", icon: _jsx(CircleHelp, { size: 18 }) }), _jsx(Metric, { label: "Attempts", value: attempts, note: "Completed exams", icon: _jsx(Clock3, { size: 18 }) }), _jsx(Metric, { label: "Average", value: attempts ? `${averageScore}%` : "—", note: "All attempts", icon: _jsx(BarChart3, { size: 18 }) })] }), _jsxs("section", { className: "section-heading", children: [_jsxs("div", { children: [_jsx("p", { className: "eyebrow", children: "YOUR LIBRARY" }), _jsx("h3", { children: "Continue studying" })] }), _jsxs("button", { className: "text-button", type: "button", onClick: () => onNavigate("library"), children: ["View all ", _jsx(ChevronRight, { size: 15 })] })] }), _jsxs("section", { className: "study-grid", children: [recent.map((set, index) => _jsx(StudyCard, { studySet: set, index: index, onOpen: onOpen }, set.id)), _jsxs("button", { className: "new-card", type: "button", onClick: onNew, children: [_jsx("span", { className: "new-icon", children: _jsx(Plus, { size: 22 }) }), _jsx("strong", { children: "Create a study set" }), _jsx("p", { children: "Upload a PDF, paste notes, or begin with your own questions." })] })] })] }));
+    return (_jsxs("div", { className: "page-wrap dashboard-page", children: [_jsx("section", { className: "welcome-row", children: _jsxs("div", { children: [_jsx("p", { className: "eyebrow", children: "QUIZFORGE" }), _jsx("h1", { children: "Build your next practice exam" }), _jsx("p", { children: "Import a PDF, add questions manually, and study with a focused mock-exam experience." })] }) }), recoveryAvailable && _jsxs("section", { className: "recovery-banner", children: [_jsx("span", { className: "recovery-icon", children: _jsx(ArchiveRestore, { size: 20 }) }), _jsxs("div", { children: [_jsx("strong", { children: "Unfinished exam recovered" }), _jsx("p", { children: "Your answers, timer, flags, and current question were saved automatically." })] }), _jsxs("button", { className: "primary-button compact", type: "button", onClick: onResumeExam, children: ["Resume exam ", _jsx(ChevronRight, { size: 15 })] })] }), _jsxs("section", { className: "hero-card streamlined-hero", children: [_jsxs("div", { className: "hero-copy", children: [_jsxs("span", { className: "pill", children: [_jsx(FileText, { size: 14 }), " SMART PDF IMPORT"] }), _jsxs("h2", { children: ["From study material to a ", _jsx("em", { children: "practice exam." })] }), _jsx("p", { children: "Review detected questions before saving, edit anything that needs attention, and create randomized tests when you are ready." }), _jsx("div", { className: "hero-actions", children: _jsxs("button", { className: "primary-button large", type: "button", onClick: onNew, children: [_jsx(Plus, { size: 18 }), " Create study set ", _jsx(ChevronRight, { size: 17 })] }) }), _jsxs("div", { className: "privacy-line", children: [_jsx(Check, { size: 15 }), " Text-based PDF extraction happens in your browser"] })] }), _jsxs("div", { className: "upload-visual", "aria-hidden": "true", children: [_jsx("div", { className: "upload-orbit orbit-one" }), _jsx("div", { className: "upload-orbit orbit-two" }), _jsxs("div", { className: "file-card rear", children: [_jsx("span", { children: "PDF" }), _jsx("i", {}), _jsx("i", {}), _jsx("i", {})] }), _jsxs("div", { className: "file-card front", children: [_jsx("div", { className: "file-icon", children: "PDF" }), _jsx("strong", { children: "Reviewer.pdf" }), _jsx("small", { children: "Ready to review" }), _jsx("div", { className: "mini-progress", children: _jsx("span", {}) })] }), _jsx("div", { className: "floating-chip chip-one", children: "Questions detected" }), _jsxs("div", { className: "floating-chip chip-two", children: ["Answer key matched ", _jsx(Check, { size: 12 })] })] })] }), _jsxs("section", { className: "metric-grid", "aria-label": "Study overview", children: [_jsx(Metric, { label: "Study sets", value: studySets.length, note: "Saved locally", icon: _jsx(BookOpen, { size: 18 }) }), _jsx(Metric, { label: "Questions", value: totalQuestions, note: "Across your library", icon: _jsx(CircleHelp, { size: 18 }) }), _jsx(Metric, { label: "Attempts", value: attempts, note: "Completed exams", icon: _jsx(Clock3, { size: 18 }) }), _jsx(Metric, { label: "Average", value: attempts ? `${averageScore}%` : "—", note: "All attempts", icon: _jsx(BarChart3, { size: 18 }) })] }), _jsxs("section", { className: "section-heading", children: [_jsxs("div", { children: [_jsx("p", { className: "eyebrow", children: "YOUR LIBRARY" }), _jsx("h3", { children: studySets.length ? "Continue studying" : "Start your first study set" })] }), studySets.length > 3 && _jsxs("button", { className: "text-button", type: "button", onClick: () => onNavigate("library"), children: ["View all ", _jsx(ChevronRight, { size: 15 })] })] }), studySets.length ? _jsxs("section", { className: "study-grid", children: [recent.map((set, index) => _jsx(StudyCard, { studySet: set, index: index, onOpen: onOpen }, set.id)), _jsxs("button", { className: "new-card", type: "button", onClick: onNew, children: [_jsx("span", { className: "new-icon", children: _jsx(Plus, { size: 22 }) }), _jsx("strong", { children: "Create a study set" }), _jsx("p", { children: "Import a PDF or add your own questions." })] })] }) : _jsxs("section", { className: "empty-library-hero", children: [_jsx("span", { children: _jsx(BookOpen, { size: 28 }) }), _jsx("h3", { children: "No study sets yet" }), _jsx("p", { children: "Create one from a text-based PDF or build the questions manually." }), _jsxs("button", { className: "primary-button", type: "button", onClick: onNew, children: [_jsx(Plus, { size: 17 }), " Create study set"] })] })] }));
 }
 function Metric({ label, value, note, icon }) {
     return _jsxs("article", { className: "metric-card", children: [_jsx("div", { className: "metric-icon", children: icon }), _jsxs("div", { children: [_jsx("small", { children: label }), _jsx("strong", { children: value }), _jsx("span", { children: note })] })] });
@@ -741,52 +1037,73 @@ function PerformanceView({ studySets, attempts, averageScore }) {
     const weakest = topicStats[0];
     return (_jsxs("div", { className: "page-wrap", children: [_jsx("div", { className: "page-head", children: _jsxs("div", { children: [_jsx("p", { className: "eyebrow", children: "PERFORMANCE" }), _jsx("h1", { children: "Your progress" }), _jsx("p", { children: "Track scores, identify weak topics, and build targeted practice exams." })] }) }), _jsxs("section", { className: "metric-grid performance-metrics", children: [_jsx(Metric, { label: "Average score", value: attempts.length ? `${averageScore}%` : "—", note: `${attempts.length} completed attempts`, icon: _jsx(BarChart3, { size: 18 }) }), _jsx(Metric, { label: "Personal best", value: attempts.length ? `${best}%` : "—", note: "Highest attempt", icon: _jsx(Sparkles, { size: 18 }) }), _jsx(Metric, { label: "Weakest topic", value: weakest ? `${weakest.accuracy}%` : "—", note: weakest?.topic ?? "More attempts needed", icon: _jsx(Target, { size: 18 }) }), _jsx(Metric, { label: "Questions practiced", value: attempts.reduce((sum, attempt) => sum + attempt.total, 0), note: "All attempts", icon: _jsx(CircleHelp, { size: 18 }) })] }), _jsxs("section", { className: "performance-panel topic-performance-panel", children: [_jsx("div", { className: "section-heading", children: _jsxs("div", { children: [_jsx("p", { className: "eyebrow", children: "TOPIC BREAKDOWN" }), _jsx("h3", { children: "Where to focus next" })] }) }), topicStats.length ? _jsx("div", { className: "topic-performance-list", children: topicStats.map((topic) => _jsxs("article", { className: "topic-performance-row", children: [_jsxs("div", { className: "topic-performance-copy", children: [_jsx("span", { className: "topic-icon", children: _jsx(Tag, { size: 15 }) }), _jsxs("div", { children: [_jsx("strong", { children: topic.topic }), _jsxs("small", { children: [topic.correct, " of ", topic.total, " correct \u00B7 ", topic.attempts, " attempt", topic.attempts === 1 ? "" : "s"] })] })] }), _jsx("div", { className: "topic-performance-bar", children: _jsx("span", { style: { width: `${topic.accuracy}%` } }) }), _jsxs("strong", { className: topic.accuracy >= 70 ? "good-score" : "low-score", children: [topic.accuracy, "%"] })] }, topic.topic)) }) : _jsxs("div", { className: "empty-state compact-empty", children: [_jsx(Target, { size: 34 }), _jsx("strong", { children: "No topic data yet" }), _jsx("p", { children: "New attempts will record per-topic accuracy automatically." })] })] }), _jsxs("section", { className: "performance-panel", children: [_jsx("div", { className: "section-heading", children: _jsxs("div", { children: [_jsx("p", { className: "eyebrow", children: "RECENT ATTEMPTS" }), _jsx("h3", { children: "Exam history" })] }) }), recent.length ? recent.map((attempt) => (_jsxs("div", { className: "attempt-row", children: [_jsxs("div", { children: [_jsx("strong", { children: attempt.setTitle }), _jsxs("span", { children: [formatDate(attempt.date), " \u00B7 ", formatDuration(attempt.durationSeconds)] })] }), _jsx("div", { className: "attempt-bar", children: _jsx("span", { style: { width: `${attempt.score}%` } }) }), _jsxs("strong", { className: attempt.score >= 70 ? "good-score" : "low-score", children: [attempt.score, "%"] })] }, `${attempt.date}-${attempt.setTitle}`))) : _jsxs("div", { className: "empty-state compact-empty", children: [_jsx(BarChart3, { size: 34 }), _jsx("strong", { children: "No attempts yet" }), _jsx("p", { children: "Complete a mock exam to see your results here." })] })] })] }));
 }
-function UploadView({ file, pasteSections, title, dragging, aiEnhanced, aiConfigured, ocrEnabled, recoveredFileName, error, fileInputRef, onFile, onUpdatePasteSection, onAddPasteSection, onRemovePasteSection, onTitle, onDragging, onAi, onOcr, onClearDraft, onCreate, onCancel }) {
+function UploadView({ file, pasteSections, title, dragging, aiEnhanced, aiConfigured, recoveredFileName, error, fileInputRef, onFile, onUpdatePasteSection, onAddPasteSection, onRemovePasteSection, onTitle, onDragging, onAi, onClearDraft, onCreate, onCancel }) {
     function acceptFile(candidate) {
         if (!candidate)
             return;
-        const supported = candidate.type === "application/pdf" || candidate.type.startsWith("image/") || /\.(pdf|png|jpe?g|webp)$/i.test(candidate.name);
+        const supported = candidate.type === "application/pdf" || /\.pdf$/i.test(candidate.name);
         if (!supported)
             return;
         onFile(candidate);
         if (!title.trim())
             onTitle(stripExtension(candidate.name));
     }
-    const completedSections = pasteSections.filter((section) => section.questions.trim().length >= 10).length;
-    return (_jsxs("div", { className: "page-wrap upload-page", children: [_jsxs("div", { className: "page-head", children: [_jsxs("div", { children: [_jsx("p", { className: "eyebrow", children: "NEW STUDY SET" }), _jsx("h1", { children: "Create from your material" }), _jsx("p", { children: "Upload a PDF, paste questions and answers separately, or combine both sources." })] }), _jsx("button", { className: "ghost-button", type: "button", onClick: onCancel, children: "Cancel" })] }), recoveredFileName && !file && _jsxs("div", { className: "recovery-note", children: [_jsx(ArchiveRestore, { size: 18 }), _jsxs("span", { children: [_jsx("strong", { children: "Draft restored." }), " Paste content was recovered. For security, browsers cannot restore the previously selected file, so reselect \u201C", recoveredFileName, "\u201D if needed."] })] }), error && _jsxs("div", { className: "error-banner", children: [_jsx(X, { size: 18 }), _jsx("span", { children: error })] }), _jsxs("section", { className: "upload-layout", children: [_jsxs("div", { className: "upload-form-panel", children: [_jsx("label", { className: "field-label", htmlFor: "set-title", children: "Study set title" }), _jsx("input", { id: "set-title", className: "text-input", value: title, onChange: (event) => onTitle(event.target.value), placeholder: "Example: Biology Midterm Reviewer" }), _jsxs("div", { className: `drop-zone ${dragging ? "dragging" : ""}`, onDragOver: (event) => { event.preventDefault(); onDragging(true); }, onDragLeave: () => onDragging(false), onDrop: (event) => { event.preventDefault(); onDragging(false); acceptFile(event.dataTransfer.files?.[0]); }, children: [_jsx("input", { ref: fileInputRef, type: "file", accept: "application/pdf,.pdf,image/png,image/jpeg,image/webp", onChange: (event) => acceptFile(event.target.files?.[0]) }), _jsx("div", { className: "big-upload", children: _jsx(Upload, { size: 28 }) }), _jsx("h3", { children: file ? "Your file is ready" : "Drop a PDF or image here" }), _jsx("p", { children: "Text PDFs are fastest. Scanned PDFs, screenshots, and photos can be read with OCR." }), file && (_jsxs("div", { className: "file-selected", children: [_jsx("span", { className: "pdf", children: file.type.startsWith("image/") ? "IMG" : "PDF" }), _jsxs("span", { children: [_jsx("strong", { children: file.name }), _jsxs("small", { children: [Math.max(0.1, file.size / 1024 / 1024).toFixed(1), " MB \u00B7 Ready to analyze"] })] }), _jsx("button", { type: "button", "aria-label": "Remove PDF", onClick: () => onFile(null), children: _jsx(X, { size: 16 }) })] })), _jsx("button", { className: "secondary-button", type: "button", onClick: () => fileInputRef.current?.click(), children: file ? "Choose another file" : "Browse files" })] }), _jsx("div", { className: "or-divider", children: _jsx("span", { children: "or build from pasted content" }) }), _jsxs("div", { className: "paste-builder-heading", children: [_jsxs("div", { children: [_jsx("p", { className: "eyebrow", children: "PASTE BUILDER" }), _jsx("h2", { children: "Questions and answers, kept separate." }), _jsx("p", { children: "Each section can hold one chapter, reviewer, or batch of questions. Add as many as you need." })] }), _jsxs("button", { className: "secondary-button add-section-top", type: "button", onClick: onAddPasteSection, children: [_jsx(Plus, { size: 17 }), " Add section"] })] }), _jsx("div", { className: "paste-section-list", children: pasteSections.map((section, index) => (_jsxs("article", { className: "paste-section-card", children: [_jsxs("div", { className: "paste-section-head", children: [_jsx("div", { className: "section-number", children: _jsx("span", { children: String(index + 1).padStart(2, "0") }) }), _jsxs("div", { children: [_jsxs("strong", { children: ["Paste section ", index + 1] }), _jsx("small", { children: section.questions.trim() ? "Content added" : "Waiting for questions" })] }), _jsx("button", { className: "remove-section-button", type: "button", "aria-label": `Remove paste section ${index + 1}`, onClick: () => onRemovePasteSection(section.id), children: _jsx(Trash2, { size: 16 }) })] }), _jsxs("label", { className: "field-label", htmlFor: `section-title-${section.id}`, children: ["Section title ", _jsx("span", { children: "optional" })] }), _jsx("input", { id: `section-title-${section.id}`, className: "text-input", value: section.title, onChange: (event) => onUpdatePasteSection(section.id, { title: event.target.value }), placeholder: "Example: Chapter 1 \u2014 Platform Basics" }), _jsxs("div", { className: "paste-columns", children: [_jsxs("label", { className: "paste-column", htmlFor: `questions-${section.id}`, children: [_jsxs("span", { className: "paste-column-title", children: [_jsx(CircleHelp, { size: 17 }), _jsxs("span", { children: [_jsx("strong", { children: "Questions" }), _jsx("small", { children: "Include the choices under every question." })] })] }), _jsx("textarea", { id: `questions-${section.id}`, className: "paste-input paste-questions", value: section.questions, onChange: (event) => onUpdatePasteSection(section.id, { questions: event.target.value }), placeholder: `1. What is the capital of Japan?
-A. Seoul
-B. Tokyo
-C. Beijing
-D. Bangkok
-
-2. Which...
-A. ...
-B. ...
-C. ...
-D. ...` })] }), _jsxs("label", { className: "paste-column", htmlFor: `answers-${section.id}`, children: [_jsxs("span", { className: "paste-column-title answer-title", children: [_jsx(Check, { size: 17 }), _jsxs("span", { children: [_jsx("strong", { children: "Answers" }), _jsx("small", { children: "Numbered or one answer per line both work." })] })] }), _jsx("textarea", { id: `answers-${section.id}`, className: "paste-input paste-answers", value: section.answers, onChange: (event) => onUpdatePasteSection(section.id, { answers: event.target.value }), placeholder: `1. B
-2. D
-3. A, C
-
-Or simply:
-B
-D
-A, C` })] })] }), _jsxs("div", { className: "paste-format-hints", children: [_jsxs("span", { children: [_jsx(Check, { size: 13 }), " A\u2013D choices supported"] }), _jsxs("span", { children: [_jsx(Check, { size: 13 }), " Choose-two/three supported"] }), _jsxs("span", { children: [_jsx(Check, { size: 13 }), " Answer-only lines auto-numbered"] })] })] }, section.id))) }), _jsxs("button", { className: "add-paste-section-button", type: "button", onClick: onAddPasteSection, children: [_jsx("span", { children: _jsx(Plus, { size: 20 }) }), _jsx("strong", { children: "Add another paste section" }), _jsx("small", { children: "Create another Questions + Answers pair" })] }), _jsxs("label", { className: "switch-row", children: [_jsxs("span", { children: [_jsx(ScanText, { size: 19 }), _jsxs("span", { children: [_jsx("strong", { children: "OCR for scans and photos" }), _jsx("small", { children: "Automatically reads pages with little or no selectable text. OCR is slower and requires an internet connection to load the OCR engine." })] })] }), _jsx("input", { type: "checkbox", checked: ocrEnabled, onChange: (event) => onOcr(event.target.checked) })] }), _jsxs("label", { className: `switch-row ${!aiConfigured ? "disabled" : ""}`, children: [_jsxs("span", { children: [_jsx(WandSparkles, { size: 19 }), _jsxs("span", { children: [_jsx("strong", { children: "AI-enhanced generation" }), _jsx("small", { children: aiConfigured ? "Generate stronger questions from ordinary notes." : "Add OPENAI_API_KEY to .env to enable this option." })] })] }), _jsx("input", { type: "checkbox", checked: aiEnhanced, disabled: !aiConfigured, onChange: (event) => onAi(event.target.checked) })] }), _jsxs("button", { className: "primary-button create-button", type: "button", onClick: onCreate, children: [_jsx(Sparkles, { size: 18 }), " Create study set ", _jsxs("span", { className: "create-count", children: [file ? "PDF" : completedSections || 0, file && completedSections ? ` + ${completedSections} section${completedSections === 1 ? "" : "s"}` : ""] }), _jsx(ChevronRight, { size: 17 })] }), _jsxs("p", { className: "privacy-note", children: [_jsx(Check, { size: 14 }), " Local mode keeps document text in your browser. AI mode sends extracted text to your configured server API."] })] }), _jsxs("aside", { className: "upload-side", children: [_jsx("p", { className: "eyebrow", children: "WHAT HAPPENS NEXT" }), _jsx("h2", { children: "Paste in batches without mixing your answers into the questions." }), _jsx("p", { children: "QuizForge parses every section independently, then combines them into one editable study set." }), _jsxs("div", { className: "feature-list", children: [_jsx(Feature, { number: "01", icon: _jsx(Image, { size: 18 }), title: "Upload or scan", text: "Use text PDFs, scanned PDFs, screenshots, or photos." }), _jsx(Feature, { number: "02", icon: _jsx(Check, { size: 18 }), title: "Add answer key", text: "Paste answers separately, even one letter per line." }), _jsx(Feature, { number: "03", icon: _jsx(Plus, { size: 18 }), title: "Add more sections", text: "Keep chapters and question batches organized." }), _jsx(Feature, { number: "04", icon: _jsx(BarChart3, { size: 18 }), title: "Review and practice", text: "Verify, shuffle, time, submit, and score." })] })] })] })] }));
-}
-function Feature({ number, icon, title, text }) {
-    return _jsxs("div", { className: "feature-row", children: [_jsx("span", { className: "feature-number", children: number }), _jsx("span", { className: "feature-icon", children: icon }), _jsxs("div", { children: [_jsx("strong", { children: title }), _jsx("small", { children: text })] })] });
+    function updateAnswer(section, answerId, patch) {
+        onUpdatePasteSection(section.id, {
+            answers: section.answers.map((answer) => answer.id === answerId ? { ...answer, ...patch } : answer)
+        });
+    }
+    function toggleCorrect(section, answerId) {
+        const target = section.answers.find((answer) => answer.id === answerId);
+        if (!target)
+            return;
+        onUpdatePasteSection(section.id, {
+            answers: section.answers.map((answer) => {
+                if (section.selectionMode === "multiple")
+                    return answer.id === answerId ? { ...answer, correct: !answer.correct } : answer;
+                return { ...answer, correct: answer.id === answerId ? !target.correct : false };
+            })
+        });
+    }
+    function setSelectionMode(section, selectionMode) {
+        const firstCorrect = section.answers.find((answer) => answer.correct)?.id;
+        onUpdatePasteSection(section.id, {
+            selectionMode,
+            answers: selectionMode === "single"
+                ? section.answers.map((answer) => ({ ...answer, correct: answer.id === firstCorrect }))
+                : section.answers
+        });
+    }
+    function addAnswer(section) {
+        onUpdatePasteSection(section.id, { activeTab: "answers", expanded: true, answers: [...section.answers, createPasteAnswer()] });
+    }
+    function removeAnswer(section, answerId) {
+        if (section.answers.length <= 2)
+            return;
+        onUpdatePasteSection(section.id, { answers: section.answers.filter((answer) => answer.id !== answerId) });
+    }
+    const completedSections = pasteSections.filter((section) => section.question.trim().length >= 3).length;
+    const expandedCount = pasteSections.filter((section) => section.expanded).length;
+    return (_jsxs("div", { className: "page-wrap upload-page streamlined-builder-page", children: [_jsxs("div", { className: "page-head", children: [_jsxs("div", { children: [_jsx("p", { className: "eyebrow", children: "CREATE STUDY SET" }), _jsx("h1", { children: "Import a PDF or build it manually" }), _jsx("p", { children: "Use a text-based PDF, or add questions one by one in the manual builder." })] }), _jsx("button", { className: "ghost-button", type: "button", onClick: onCancel, children: "Cancel" })] }), recoveredFileName && !file && _jsxs("div", { className: "recovery-note", children: [_jsx(ArchiveRestore, { size: 18 }), _jsxs("span", { children: [_jsx("strong", { children: "Draft restored." }), " Your manual questions were recovered. Reselect \u201C", recoveredFileName, "\u201D only if you still want to import that PDF."] })] }), error && _jsxs("div", { className: "error-banner", children: [_jsx(X, { size: 18 }), _jsx("span", { children: error })] }), _jsxs("section", { className: "streamlined-create-panel", children: [_jsx("label", { className: "field-label", htmlFor: "set-title", children: "Study set title" }), _jsx("input", { id: "set-title", className: "text-input set-title-input", value: title, onChange: (event) => onTitle(event.target.value), placeholder: "Example: Biology Midterm Reviewer" }), _jsxs("div", { className: `drop-zone compact-drop-zone ${dragging ? "dragging" : ""}`, onDragOver: (event) => { event.preventDefault(); onDragging(true); }, onDragLeave: () => onDragging(false), onDrop: (event) => { event.preventDefault(); onDragging(false); acceptFile(event.dataTransfer.files?.[0]); }, children: [_jsx("input", { ref: fileInputRef, type: "file", accept: "application/pdf,.pdf", onChange: (event) => acceptFile(event.target.files?.[0]) }), _jsxs("div", { className: "drop-zone-copy", children: [_jsx("span", { className: "big-upload", children: _jsx(Upload, { size: 24 }) }), _jsxs("span", { children: [_jsx("strong", { children: file ? file.name : "Drop a text-based PDF here" }), _jsx("small", { children: file ? `${Math.max(0.1, file.size / 1024 / 1024).toFixed(1)} MB · ready to import` : "or browse your computer" })] })] }), _jsxs("div", { className: "drop-zone-actions", children: [file && _jsx("button", { className: "icon-button", type: "button", "aria-label": "Remove PDF", onClick: () => onFile(null), children: _jsx(X, { size: 16 }) }), _jsx("button", { className: "secondary-button compact", type: "button", onClick: () => fileInputRef.current?.click(), children: file ? "Replace" : "Browse PDF" })] })] }), _jsxs("p", { className: "scan-coming-soon", children: [_jsx(AlertTriangle, { size: 14 }), " Scanned-image PDF OCR is temporarily unavailable. Text-based PDFs work normally."] }), _jsx("div", { className: "or-divider", children: _jsx("span", { children: "or build questions manually" }) }), _jsxs("div", { className: "manual-builder-heading simplified-heading", children: [_jsxs("div", { children: [_jsx("p", { className: "eyebrow", children: "MANUAL BUILDER" }), _jsx("h2", { children: "Questions stay compact until you open them." }), _jsx("p", { children: "Only one question opens at a time, so long reviewers remain easy to scan." })] }), expandedCount > 0 && _jsx("button", { className: "text-button", type: "button", onClick: () => pasteSections.forEach((section) => onUpdatePasteSection(section.id, { expanded: false })), children: "Collapse all" })] }), _jsx("div", { className: "manual-question-list accordion-list", children: pasteSections.map((section, index) => {
+                            const answerCount = section.answers.filter((answer) => answer.text.trim()).length;
+                            const correctCount = section.answers.filter((answer) => answer.correct).length;
+                            const complete = Boolean(section.question.trim().length >= 3 && answerCount >= 2 && correctCount > 0);
+                            const summary = section.question.trim() || "Untitled question";
+                            return (_jsxs("article", { className: `manual-question-card accordion-card ${section.expanded ? "expanded" : "collapsed"}`, children: [_jsxs("div", { className: "manual-question-head accordion-head", children: [_jsxs("button", { className: "manual-question-toggle", type: "button", onClick: () => onUpdatePasteSection(section.id, { expanded: !section.expanded }), "aria-expanded": section.expanded, children: [_jsx("span", { className: "manual-question-number", children: index + 1 }), _jsxs("span", { className: "manual-question-summary", children: [_jsxs("strong", { children: ["Question ", index + 1] }), _jsx("b", { children: summary }), _jsxs("small", { children: [answerCount, " choice", answerCount === 1 ? "" : "s", " \u00B7 ", correctCount ? `${correctCount} correct` : "correct answer not selected"] })] }), _jsxs("span", { className: `question-completion ${complete ? "complete" : "needs"}`, children: [complete ? _jsx(CheckCircle2, { size: 15 }) : _jsx(CircleHelp, { size: 15 }), complete ? "Complete" : "Needs attention"] }), _jsx(ChevronRight, { className: `accordion-chevron ${section.expanded ? "open" : ""}`, size: 18 })] }), _jsx("button", { className: "remove-section-button", type: "button", "aria-label": `Remove question ${index + 1}`, onClick: () => onRemovePasteSection(section.id), children: _jsx(Trash2, { size: 17 }) })] }), section.expanded && (_jsxs("div", { className: "accordion-content", children: [_jsxs("div", { className: "manual-question-tabs", role: "tablist", "aria-label": `Question ${index + 1} editor tabs`, children: [_jsxs("button", { type: "button", role: "tab", "aria-selected": section.activeTab === "question", className: section.activeTab === "question" ? "active" : "", onClick: () => onUpdatePasteSection(section.id, { activeTab: "question", expanded: true }), children: [_jsx(CircleHelp, { size: 17 }), " Question"] }), _jsxs("button", { type: "button", role: "tab", "aria-selected": section.activeTab === "answers", className: section.activeTab === "answers" ? "active" : "", onClick: () => onUpdatePasteSection(section.id, { activeTab: "answers", expanded: true }), children: [_jsx(CheckCircle2, { size: 17 }), " Answers ", _jsx("span", { children: section.answers.length })] })] }), section.activeTab === "question" ? (_jsxs("div", { className: "manual-tab-panel question-tab-panel", role: "tabpanel", children: [_jsx("label", { className: "field-label", htmlFor: `manual-question-${section.id}`, children: "Question text" }), _jsx("textarea", { id: `manual-question-${section.id}`, className: "manual-question-input", value: section.question, onChange: (event) => onUpdatePasteSection(section.id, { question: event.target.value }), placeholder: "Example: What is the capital of Japan?" }), _jsxs("label", { className: "single-meta-field", children: [_jsx("span", { children: "Topic" }), _jsx("input", { className: "text-input", value: section.topic, onChange: (event) => onUpdatePasteSection(section.id, { topic: event.target.value }), placeholder: "General" })] }), _jsxs("div", { className: "manual-panel-footer", children: [_jsx("span", { children: "Saved automatically in this browser." }), _jsxs("button", { className: "primary-button compact", type: "button", onClick: () => onUpdatePasteSection(section.id, { activeTab: "answers", expanded: true }), children: ["Continue to answers ", _jsx(ChevronRight, { size: 16 })] })] })] })) : (_jsxs("div", { className: "manual-tab-panel answers-tab-panel", role: "tabpanel", children: [_jsxs("div", { className: "manual-answers-toolbar", children: [_jsxs("div", { children: [_jsx("strong", { children: "Answer choices" }), _jsx("small", { children: "Choose whether one or several answers are correct." })] }), _jsxs("div", { className: "manual-mode-toggle", "aria-label": "Correct-answer mode", children: [_jsx("button", { type: "button", className: section.selectionMode === "single" ? "active" : "", onClick: () => setSelectionMode(section, "single"), children: "Single correct" }), _jsx("button", { type: "button", className: section.selectionMode === "multiple" ? "active" : "", onClick: () => setSelectionMode(section, "multiple"), children: "Multiple correct" })] })] }), _jsx("div", { className: "manual-answer-list", children: section.answers.map((answer, answerIndex) => (_jsxs("div", { className: `manual-answer-row ${answer.correct ? "correct" : ""}`, children: [_jsx("span", { className: "manual-answer-letter", children: String.fromCharCode(65 + answerIndex) }), _jsx("input", { value: answer.text, onChange: (event) => updateAnswer(section, answer.id, { text: event.target.value }), placeholder: `Answer choice ${String.fromCharCode(65 + answerIndex)}`, "aria-label": `Question ${index + 1} answer ${String.fromCharCode(65 + answerIndex)}` }), _jsxs("button", { className: `manual-correct-button ${answer.correct ? "selected" : ""}`, type: "button", onClick: () => toggleCorrect(section, answer.id), "aria-label": answer.correct ? "Unmark correct answer" : "Mark correct answer", children: [_jsx(Check, { size: 17 }), _jsx("span", { children: answer.correct ? "Correct" : "Mark correct" })] }), _jsx("button", { className: "manual-remove-answer", type: "button", disabled: section.answers.length <= 2, onClick: () => removeAnswer(section, answer.id), "aria-label": `Remove answer ${String.fromCharCode(65 + answerIndex)}`, children: _jsx(X, { size: 16 }) })] }, answer.id))) }), _jsxs("button", { className: "add-answer-button", type: "button", onClick: () => addAnswer(section), children: [_jsx(Plus, { size: 17 }), " Add answer choice"] }), _jsxs("div", { className: "manual-panel-footer", children: [_jsxs("button", { className: "text-button", type: "button", onClick: () => onUpdatePasteSection(section.id, { activeTab: "question", expanded: true }), children: [_jsx(ChevronLeft, { size: 15 }), " Back to question"] }), _jsxs("button", { className: "secondary-button compact", type: "button", onClick: () => onUpdatePasteSection(section.id, { expanded: false }), children: ["Done with question ", index + 1] })] })] }))] }))] }, section.id));
+                        }) }), _jsxs("button", { className: "add-paste-section-button add-manual-question-button", type: "button", onClick: onAddPasteSection, children: [_jsx("span", { children: _jsx(Plus, { size: 20 }) }), _jsx("strong", { children: "Add question" }), _jsx("small", { children: "The current question collapses and the new question opens automatically" })] }), aiConfigured && _jsxs("label", { className: "switch-row ai-import-switch", children: [_jsxs("span", { children: [_jsx(Bot, { size: 19 }), _jsxs("span", { children: [_jsx("strong", { children: "AI import assistance" }), _jsx("small", { children: "Review the local extraction, repair clear formatting problems, add confidence notes, and flag uncertain answers before saving." })] })] }), _jsx("input", { type: "checkbox", checked: aiEnhanced, onChange: (event) => onAi(event.target.checked) })] }), _jsxs("div", { className: "create-builder-footer", children: [_jsxs("div", { children: [_jsx("strong", { children: file ? "PDF ready" : `${completedSections} manual question${completedSections === 1 ? "" : "s"}` }), _jsx("small", { children: aiEnhanced ? "AI assistance is enabled; extracted text will be sent securely to your server-side AI endpoint." : "Your document and draft stay local in this browser." })] }), _jsxs("button", { className: "primary-button create-button", type: "button", onClick: onCreate, children: [_jsx(Sparkles, { size: 18 }), " Review study set ", _jsx(ChevronRight, { size: 17 })] })] }), (title.trim() || completedSections || file) && _jsx("button", { className: "text-button clear-draft-button", type: "button", onClick: onClearDraft, children: "Clear saved draft" })] })] }));
 }
 function ProcessingView({ fileName, progress, step, activeLabel }) {
     const steps = [
         { id: "read", label: activeLabel },
         { id: "detect", label: "Detecting questions and choices" },
-        { id: "answers", label: "Matching correct answers" },
+        { id: "answers", label: activeLabel },
         { id: "finish", label: "Preparing the review screen" }
     ];
     const currentIndex = steps.findIndex((item) => item.id === step);
     return (_jsx("div", { className: "processing-page", children: _jsxs("section", { className: "processing-card", children: [_jsx("div", { className: "processor", children: _jsx(Sparkles, { size: 30 }) }), _jsxs("span", { className: "pill", children: [_jsx(WandSparkles, { size: 14 }), " BUILDING STUDY SET"] }), _jsx("h1", { children: "Turning your material into a mock exam" }), _jsx("p", { children: fileName }), _jsx("div", { className: "process-progress", children: _jsx("span", { style: { width: `${progress}%` } }) }), _jsxs("strong", { className: "progress-number", children: [progress, "%"] }), _jsx("div", { className: "process-list", children: steps.map((item, index) => (_jsxs("div", { className: `process-step ${index < currentIndex ? "done" : index === currentIndex ? "current" : ""}`, children: [_jsx("span", { className: "step-dot", children: index < currentIndex ? _jsx(Check, { size: 15 }) : index + 1 }), _jsx("span", { children: item.label })] }, item.id))) })] }) }));
 }
 function ImportPreviewView({ pending, onToggle, onSelectMode, onUpdateQuestion, onUpdateAnswer, onBack, onConfirm }) {
-    const [filter, setFilter] = useState("all");
+    const [filter, setFilter] = useState(() => pending.issues.some((issue) => issue.questionId) ? "issues" : "all");
     const [query, setQuery] = useState("");
     const issuesByQuestion = useMemo(() => {
         const map = new Map();
@@ -800,22 +1117,22 @@ function ImportPreviewView({ pending, onToggle, onSelectMode, onUpdateQuestion, 
     const errorCount = pending.issues.filter((issue) => issue.severity === "error").length;
     const warningCount = pending.issues.filter((issue) => issue.severity === "warning").length;
     const verifiedCount = pending.questions.filter(isVerifiedQuestion).length;
-    const filtered = pending.questions.filter((question) => {
-        const issues = issuesByQuestion.get(question.id) ?? [];
-        const matchesFilter = filter === "all" || (filter === "issues" && issues.length > 0) || (filter === "missing" && !isVerifiedQuestion(question));
-        const haystack = `${question.question} ${question.topic ?? ""}`.toLowerCase();
-        return matchesFilter && haystack.includes(query.toLowerCase());
-    });
     const selected = new Set(pending.selectedIds);
-    return (_jsxs("div", { className: "page-wrap import-preview-page", children: [_jsxs("div", { className: "page-head", children: [_jsxs("div", { children: [_jsx("p", { className: "eyebrow", children: "IMPORT PREVIEW" }), _jsx("h1", { children: "Check the import before saving" }), _jsx("p", { children: "QuizForge validates question structure, answer keys, duplicates, and suspicious choices before anything enters your library." })] }), _jsxs("div", { className: "toolbar", children: [_jsxs("button", { className: "ghost-button", type: "button", onClick: onBack, children: [_jsx(ChevronLeft, { size: 16 }), " Back"] }), _jsxs("button", { className: "primary-button", type: "button", onClick: onConfirm, children: ["Add ", pending.selectedIds.length, " questions ", _jsx(ChevronRight, { size: 16 })] })] })] }), _jsxs("section", { className: "import-overview-grid", children: [_jsx(Metric, { label: "Prepared", value: pending.questions.length, note: `${pending.expected} detected in source`, icon: _jsx(Layers3, { size: 18 }) }), _jsx(Metric, { label: "Answers found", value: verifiedCount, note: `${pending.questions.length - verifiedCount} need an answer`, icon: _jsx(CheckCircle2, { size: 18 }) }), _jsx(Metric, { label: "Warnings", value: warningCount, note: "Review recommended", icon: _jsx(AlertTriangle, { size: 18 }) }), _jsx(Metric, { label: "Blocking issues", value: errorCount, note: "Fix or exclude", icon: _jsx(CircleHelp, { size: 18 }) })] }), (pending.parserWarnings.length > 0 || pending.issues.some((issue) => !issue.questionId)) && (_jsxs("section", { className: "import-global-notes", children: [_jsx(AlertTriangle, { size: 19 }), _jsxs("div", { children: [_jsx("strong", { children: "Source-level notes" }), [...pending.parserWarnings, ...pending.issues.filter((issue) => !issue.questionId).map((issue) => issue.message)].slice(0, 4).map((message) => _jsx("p", { children: message }, message))] })] })), _jsxs("section", { className: "import-toolbar card-surface", children: [_jsxs("label", { className: "search-box import-search", children: [_jsx(Search, { size: 17 }), _jsx("input", { value: query, onChange: (event) => setQuery(event.target.value), placeholder: "Search questions or topics" })] }), _jsxs("div", { className: "segmented-control", "aria-label": "Import filters", children: [_jsx("button", { type: "button", className: filter === "all" ? "active" : "", onClick: () => setFilter("all"), children: "All" }), _jsx("button", { type: "button", className: filter === "issues" ? "active" : "", onClick: () => setFilter("issues"), children: "Has issues" }), _jsx("button", { type: "button", className: filter === "missing" ? "active" : "", onClick: () => setFilter("missing"), children: "Missing answers" })] }), _jsxs("div", { className: "toolbar import-select-actions", children: [_jsx("button", { className: "text-button", type: "button", onClick: () => onSelectMode("all"), children: "Select all" }), _jsx("button", { className: "text-button", type: "button", onClick: () => onSelectMode("clean"), children: "Select clean only" }), _jsx("button", { className: "text-button", type: "button", onClick: () => onSelectMode("none"), children: "Clear" })] })] }), _jsxs("section", { className: "import-question-list", children: [filtered.map((question, index) => {
-                        const questionIssues = issuesByQuestion.get(question.id) ?? [];
-                        const included = selected.has(question.id);
-                        const correctIds = getCorrectIds(question);
-                        return (_jsxs("article", { className: `import-question-card ${included ? "included" : "excluded"}`, children: [_jsxs("div", { className: "import-question-top", children: [_jsxs("label", { className: "include-check", children: [_jsx("input", { type: "checkbox", checked: included, onChange: () => onToggle(question.id) }), _jsx("span", { children: "Include" })] }), _jsxs("span", { className: "question-index", children: ["Question ", pending.questions.indexOf(question) + 1] }), _jsx("input", { className: "topic-input", value: question.topic ?? "General", onChange: (event) => onUpdateQuestion(question.id, { topic: event.target.value }), "aria-label": `Topic for question ${index + 1}` }), _jsx("span", { className: `status ${isVerifiedQuestion(question) ? "ready" : "draft"}`, children: isVerifiedQuestion(question) ? "Answer ready" : "Needs answer" })] }), _jsx("textarea", { className: "import-question-text", value: question.question, onChange: (event) => onUpdateQuestion(question.id, { question: event.target.value }) }), _jsx("div", { className: "import-option-grid", children: question.options.map((option, optionIndex) => {
-                                        const correct = correctIds.includes(option.id);
-                                        return _jsxs("button", { type: "button", className: `import-option ${correct ? "correct" : ""}`, onClick: () => onUpdateAnswer(question.id, option.id), children: [_jsx("span", { children: String.fromCharCode(65 + optionIndex) }), _jsx("b", { children: option.text }), correct && _jsx(Check, { size: 15 })] }, option.id);
-                                    }) }), questionIssues.length > 0 ? _jsx("div", { className: "question-issue-list", children: questionIssues.map((issue) => _jsxs("div", { className: `question-issue ${issue.severity}`, children: [issue.severity === "error" ? _jsx(CircleHelp, { size: 14 }) : _jsx(AlertTriangle, { size: 14 }), _jsxs("span", { children: [_jsx("strong", { children: issue.title }), issue.message] })] }, issue.id)) }) : _jsxs("div", { className: "question-clean", children: [_jsx(CheckCircle2, { size: 15 }), " Structure looks good"] })] }, question.id));
-                    }), !filtered.length && _jsxs("div", { className: "empty-state", children: [_jsx(Filter, { size: 34 }), _jsx("strong", { children: "No questions match this filter" }), _jsx("p", { children: "Try a different filter or search term." })] })] }), _jsxs("div", { className: "sticky-import-footer", children: [_jsxs("span", { children: [_jsx("strong", { children: pending.selectedIds.length }), " of ", pending.questions.length, " questions selected"] }), _jsxs("button", { className: "primary-button", type: "button", onClick: onConfirm, children: ["Save to library ", _jsx(ChevronRight, { size: 16 })] })] })] }));
+    const matchesSearch = (question) => `${question.question} ${question.topic ?? ""}`.toLowerCase().includes(query.toLowerCase());
+    const attentionQuestions = pending.questions.filter((question) => (issuesByQuestion.get(question.id)?.length ?? 0) > 0 && matchesSearch(question));
+    const cleanQuestions = pending.questions.filter((question) => !(issuesByQuestion.get(question.id)?.length ?? 0) && matchesSearch(question));
+    const missingQuestions = pending.questions.filter((question) => !isVerifiedQuestion(question) && matchesSearch(question));
+    function renderQuestionCard(question) {
+        const questionIssues = issuesByQuestion.get(question.id) ?? [];
+        const included = selected.has(question.id);
+        const correctIds = getCorrectIds(question);
+        const questionNumber = pending.questions.indexOf(question) + 1;
+        return (_jsxs("article", { className: `import-question-card ${included ? "included" : "excluded"}`, children: [_jsxs("div", { className: "import-question-top", children: [_jsxs("label", { className: "include-check", children: [_jsx("input", { type: "checkbox", checked: included, onChange: () => onToggle(question.id) }), _jsx("span", { children: "Include" })] }), _jsxs("span", { className: "question-index", children: ["Question ", questionNumber] }), _jsx("input", { className: "topic-input", value: question.topic ?? "General", onChange: (event) => onUpdateQuestion(question.id, { topic: event.target.value }), "aria-label": `Topic for question ${questionNumber}` }), _jsx("span", { className: `status ${isVerifiedQuestion(question) ? "ready" : "draft"}`, children: isVerifiedQuestion(question) ? "Answer ready" : "Needs answer" })] }), _jsx("textarea", { className: "import-question-text", value: question.question, onChange: (event) => onUpdateQuestion(question.id, { question: event.target.value }) }), question.aiConfidence !== undefined && (_jsxs("div", { className: `ai-review-strip ${question.aiConfidence >= 0.85 ? "high" : question.aiConfidence >= 0.75 ? "medium" : "low"}`, children: [_jsx(Bot, { size: 16 }), _jsxs("span", { children: [_jsxs("strong", { children: ["AI reviewed \u00B7 ", Math.round(question.aiConfidence * 100), "% confidence"] }), _jsx("small", { children: question.aiChanged ? (question.aiNotes?.[0] ?? "Formatting or answer structure was repaired.") : "No clear repair was needed." })] }), question.aiChanged && _jsxs("span", { className: "ai-repaired-badge", children: [_jsx(WandSparkles, { size: 13 }), " Repaired"] })] })), _jsx("div", { className: "import-option-grid", children: question.options.map((option, optionIndex) => {
+                        const correct = correctIds.includes(option.id);
+                        return _jsxs("button", { type: "button", className: `import-option ${correct ? "correct" : ""}`, onClick: () => onUpdateAnswer(question.id, option.id), children: [_jsx("span", { children: String.fromCharCode(65 + optionIndex) }), _jsx("b", { children: option.text }), correct && _jsx(Check, { size: 15 })] }, option.id);
+                    }) }), questionIssues.length > 0 ? _jsx("div", { className: "question-issue-list", children: questionIssues.map((issue) => _jsxs("div", { className: `question-issue ${issue.severity}`, children: [issue.severity === "error" ? _jsx(CircleHelp, { size: 14 }) : _jsx(AlertTriangle, { size: 14 }), _jsxs("span", { children: [_jsx("strong", { children: issue.title }), issue.message] })] }, issue.id)) }) : _jsxs("div", { className: "question-clean", children: [_jsx(CheckCircle2, { size: 15 }), " Structure looks good"] })] }, question.id));
+    }
+    return (_jsxs("div", { className: "page-wrap import-preview-page streamlined-import-preview", children: [_jsxs("div", { className: "page-head", children: [_jsxs("div", { children: [_jsx("p", { className: "eyebrow", children: "IMPORT REVIEW" }), _jsx("h1", { children: "Fix only what needs attention" }), _jsx("p", { children: "Problem questions appear first. Clean questions stay collapsed until you need them." })] }), _jsxs("div", { className: "toolbar", children: [_jsxs("button", { className: "ghost-button", type: "button", onClick: onBack, children: [_jsx(ChevronLeft, { size: 16 }), " Back"] }), _jsxs("button", { className: "primary-button", type: "button", onClick: onConfirm, children: ["Save ", pending.selectedIds.length, " questions ", _jsx(ChevronRight, { size: 16 })] })] })] }), _jsxs("section", { className: "import-overview-grid compact-overview", children: [_jsx(Metric, { label: "Prepared", value: pending.questions.length, note: `${pending.expected} detected in source`, icon: _jsx(Layers3, { size: 18 }) }), _jsx(Metric, { label: "Answers found", value: verifiedCount, note: `${pending.questions.length - verifiedCount} need an answer`, icon: _jsx(CheckCircle2, { size: 18 }) }), _jsx(Metric, { label: "Warnings", value: warningCount, note: "Review recommended", icon: _jsx(AlertTriangle, { size: 18 }) }), _jsx(Metric, { label: "Blocking", value: errorCount, note: "Fix or exclude", icon: _jsx(CircleHelp, { size: 18 }) })] }), (pending.parserWarnings.length > 0 || pending.issues.some((issue) => !issue.questionId)) && _jsxs("section", { className: "import-global-notes", children: [_jsx(AlertTriangle, { size: 19 }), _jsxs("div", { children: [_jsx("strong", { children: "Source-level notes" }), [...pending.parserWarnings, ...pending.issues.filter((issue) => !issue.questionId).map((issue) => issue.message)].slice(0, 4).map((message) => _jsx("p", { children: message }, message))] })] }), _jsxs("section", { className: "import-toolbar card-surface simplified-import-toolbar", children: [_jsxs("label", { className: "search-box import-search", children: [_jsx(Search, { size: 17 }), _jsx("input", { value: query, onChange: (event) => setQuery(event.target.value), placeholder: "Search questions or topics" })] }), _jsxs("div", { className: "segmented-control", "aria-label": "Import filters", children: [_jsxs("button", { type: "button", className: filter === "issues" ? "active" : "", onClick: () => setFilter("issues"), children: ["Needs attention ", _jsx("span", { children: attentionQuestions.length })] }), _jsxs("button", { type: "button", className: filter === "missing" ? "active" : "", onClick: () => setFilter("missing"), children: ["Missing answers ", _jsx("span", { children: missingQuestions.length })] }), _jsx("button", { type: "button", className: filter === "all" ? "active" : "", onClick: () => setFilter("all"), children: "All" })] }), _jsxs("div", { className: "toolbar import-select-actions", children: [_jsx("button", { className: "text-button", type: "button", onClick: () => onSelectMode("all"), children: "Select all" }), _jsx("button", { className: "text-button", type: "button", onClick: () => onSelectMode("clean"), children: "Select clean" }), _jsx("button", { className: "text-button", type: "button", onClick: () => onSelectMode("none"), children: "Clear" })] })] }), _jsxs("section", { className: "import-question-list", children: [filter === "issues" && attentionQuestions.map(renderQuestionCard), filter === "missing" && missingQuestions.map(renderQuestionCard), filter === "all" && attentionQuestions.map(renderQuestionCard), filter === "all" && cleanQuestions.length > 0 && (_jsxs("details", { className: "clean-question-disclosure", children: [_jsxs("summary", { children: [_jsxs("span", { children: [_jsx(CheckCircle2, { size: 18 }), _jsxs("strong", { children: ["View ", cleanQuestions.length, " clean question", cleanQuestions.length === 1 ? "" : "s"] }), _jsx("small", { children: "These questions passed the structural checks." })] }), _jsx(ChevronRight, { size: 18 })] }), _jsx("div", { className: "clean-question-content", children: cleanQuestions.map(renderQuestionCard) })] })), ((filter === "issues" && !attentionQuestions.length) || (filter === "missing" && !missingQuestions.length) || (filter === "all" && !attentionQuestions.length && !cleanQuestions.length)) && _jsxs("div", { className: "empty-state", children: [_jsx(CheckCircle2, { size: 34 }), _jsx("strong", { children: "No questions match this view" }), _jsx("p", { children: "Try another filter or search term." })] })] }), _jsxs("div", { className: "sticky-import-footer", children: [_jsxs("span", { children: [_jsx("strong", { children: pending.selectedIds.length }), " of ", pending.questions.length, " selected"] }), _jsxs("button", { className: "primary-button", type: "button", onClick: onConfirm, children: ["Save to library ", _jsx(ChevronRight, { size: 16 })] })] })] }));
 }
 function EditorView({ studySet, question, onSelect, onUpdateQuestion, onUpdateOption, onMarkCorrect, onSelectionMode, onAddOption, onRemoveOption, onAddQuestion, onDuplicate, onDelete, onBulkDelete, onBulkStatus, onBulkTopic, onDeleteSet, onSetup, onDashboard }) {
     const [query, setQuery] = useState("");
@@ -856,19 +1173,19 @@ function EditorView({ studySet, question, onSelect, onUpdateQuestion, onUpdateOp
     function clearSelection() {
         setSelectedIds([]);
     }
-    return (_jsxs("div", { className: "page-wrap editor-page", children: [_jsxs("div", { className: "page-head", children: [_jsxs("div", { children: [_jsx("button", { className: "breadcrumb-button", type: "button", onClick: onDashboard, children: "Dashboard" }), _jsx("span", { className: "breadcrumb-separator", children: "/" }), _jsx("span", { children: "Review questions" }), _jsx("h1", { children: "Review extracted questions" }), _jsx("p", { children: "Search, filter, edit, and update several questions at once." })] }), _jsxs("div", { className: "toolbar", children: [_jsxs("button", { className: "ghost-button danger-ghost", type: "button", onClick: () => onDeleteSet(studySet.id), children: [_jsx(Trash2, { size: 16 }), " Delete set"] }), _jsxs("button", { className: "primary-button", type: "button", onClick: onSetup, children: ["Set up exam ", _jsx(ChevronRight, { size: 16 })] })] })] }), _jsxs("section", { className: "bulk-editor-toolbar", children: [_jsxs("label", { className: "search-box bulk-search", children: [_jsx(Search, { size: 17 }), _jsx("input", { value: query, onChange: (event) => setQuery(event.target.value), placeholder: "Search question text or topic" })] }), _jsxs("select", { value: statusFilter, onChange: (event) => setStatusFilter(event.target.value), "aria-label": "Filter by status", children: [_jsx("option", { value: "all", children: "All statuses" }), _jsx("option", { value: "verified", children: "Verified" }), _jsx("option", { value: "review", children: "Needs review" })] }), _jsxs("select", { value: topicFilter, onChange: (event) => setTopicFilter(event.target.value), "aria-label": "Filter by topic", children: [_jsx("option", { children: "All topics" }), topics.map((topic) => _jsx("option", { children: topic }, topic))] }), _jsx("button", { className: "secondary-button compact", type: "button", onClick: toggleAllVisible, children: allVisibleSelected ? "Clear visible" : "Select visible" })] }), selectedIds.length > 0 && (_jsxs("section", { className: "bulk-action-bar", children: [_jsxs("div", { children: [_jsx("span", { className: "bulk-count", children: selectedIds.length }), _jsx("strong", { children: "questions selected" }), _jsx("button", { className: "text-button", type: "button", onClick: clearSelection, children: "Clear" })] }), _jsxs("div", { className: "bulk-actions", children: [_jsxs("button", { className: "secondary-button compact", type: "button", onClick: () => onBulkStatus(selectedIds, "verified"), children: [_jsx(CheckCircle2, { size: 15 }), " Check answers"] }), _jsxs("button", { className: "secondary-button compact", type: "button", onClick: () => onBulkStatus(selectedIds, "review"), children: [_jsx(CircleHelp, { size: 15 }), " Mark review"] }), _jsxs("label", { className: "bulk-topic-control", children: [_jsx(Tag, { size: 15 }), _jsx("input", { value: bulkTopic, onChange: (event) => setBulkTopic(event.target.value), placeholder: "Topic" }), _jsx("button", { type: "button", onClick: () => onBulkTopic(selectedIds, bulkTopic.trim() || "General"), children: "Apply" })] }), _jsxs("button", { className: "ghost-button danger-ghost compact", type: "button", onClick: () => { onBulkDelete(selectedIds); clearSelection(); }, children: [_jsx(Trash2, { size: 15 }), " Delete"] })] })] })), _jsxs("div", { className: "editor-layout", children: [_jsxs("aside", { className: "editor-sidebar", children: [_jsxs("div", { className: "set-summary", children: [_jsx("div", { className: "set-file-icon", children: _jsx(FileText, { size: 21 }) }), _jsx("strong", { children: studySet.title }), _jsx("span", { children: studySet.sourceName }), _jsxs("div", { className: "summary-grid", children: [_jsxs("div", { children: [_jsx("strong", { children: studySet.questions.length }), _jsx("small", { children: "Questions" })] }), _jsxs("div", { children: [_jsx("strong", { children: verified }), _jsx("small", { children: "Verified" })] }), _jsxs("div", { children: [_jsx("strong", { children: studySet.questions.length - verified }), _jsx("small", { children: "Review" })] })] })] }), _jsxs("div", { className: "question-list filtered-list", children: [filteredQuestions.map((item) => {
+    return (_jsxs("div", { className: "page-wrap editor-page", children: [_jsxs("div", { className: "page-head", children: [_jsxs("div", { children: [_jsx("button", { className: "breadcrumb-button", type: "button", onClick: onDashboard, children: "Dashboard" }), _jsx("span", { className: "breadcrumb-separator", children: "/" }), _jsx("span", { children: "Review questions" }), _jsx("h1", { children: "Review extracted questions" }), _jsx("p", { children: "Search, filter, edit, and update several questions at once." })] }), _jsxs("div", { className: "toolbar", children: [_jsxs("button", { className: "ghost-button danger-ghost", type: "button", onClick: () => onDeleteSet(studySet.id), children: [_jsx(Trash2, { size: 16 }), " Delete set"] }), _jsxs("button", { className: "primary-button", type: "button", onClick: onSetup, children: ["Set up exam ", _jsx(ChevronRight, { size: 16 })] })] })] }), _jsxs("section", { className: "bulk-editor-toolbar", children: [_jsxs("label", { className: "search-box bulk-search", children: [_jsx(Search, { size: 17 }), _jsx("input", { value: query, onChange: (event) => setQuery(event.target.value), placeholder: "Search question text or topic" })] }), _jsxs("select", { value: statusFilter, onChange: (event) => setStatusFilter(event.target.value), "aria-label": "Filter by status", children: [_jsx("option", { value: "all", children: "All statuses" }), _jsx("option", { value: "verified", children: "Verified" }), _jsx("option", { value: "review", children: "Needs review" })] }), _jsxs("select", { value: topicFilter, onChange: (event) => setTopicFilter(event.target.value), "aria-label": "Filter by topic", children: [_jsx("option", { children: "All topics" }), topics.map((topic) => _jsx("option", { children: topic }, topic))] }), _jsx("button", { className: "secondary-button compact", type: "button", onClick: toggleAllVisible, children: allVisibleSelected ? "Clear visible" : "Select visible" })] }), selectedIds.length > 0 && (_jsxs("section", { className: "bulk-action-bar", children: [_jsxs("div", { children: [_jsx("span", { className: "bulk-count", children: selectedIds.length }), _jsx("strong", { children: "questions selected" }), _jsx("button", { className: "text-button", type: "button", onClick: clearSelection, children: "Clear" })] }), _jsxs("div", { className: "bulk-actions", children: [_jsxs("button", { className: "secondary-button compact", type: "button", onClick: () => onBulkStatus(selectedIds, "review"), children: [_jsx(CircleHelp, { size: 15 }), " Mark review"] }), _jsxs("label", { className: "bulk-topic-control", children: [_jsx(Tag, { size: 15 }), _jsx("input", { value: bulkTopic, onChange: (event) => setBulkTopic(event.target.value), placeholder: "Topic" }), _jsx("button", { type: "button", onClick: () => onBulkTopic(selectedIds, bulkTopic.trim() || "General"), children: "Apply" })] }), _jsxs("button", { className: "ghost-button danger-ghost compact", type: "button", onClick: () => { onBulkDelete(selectedIds); clearSelection(); }, children: [_jsx(Trash2, { size: 15 }), " Delete"] })] })] })), _jsxs("div", { className: "editor-layout", children: [_jsxs("aside", { className: "editor-sidebar", children: [_jsxs("div", { className: "set-summary", children: [_jsx("div", { className: "set-file-icon", children: _jsx(FileText, { size: 21 }) }), _jsx("strong", { children: studySet.title }), _jsx("span", { children: studySet.sourceName }), _jsxs("div", { className: "summary-grid", children: [_jsxs("div", { children: [_jsx("strong", { children: studySet.questions.length }), _jsx("small", { children: "Questions" })] }), _jsxs("div", { children: [_jsx("strong", { children: verified }), _jsx("small", { children: "Verified" })] }), _jsxs("div", { children: [_jsx("strong", { children: studySet.questions.length - verified }), _jsx("small", { children: "Review" })] })] })] }), _jsxs("div", { className: "question-list filtered-list", children: [filteredQuestions.map((item) => {
                                         const itemIndex = studySet.questions.indexOf(item);
-                                        const itemCorrectIds = getCorrectIds(item);
-                                        return (_jsxs("div", { className: `question-list-row ${item.id === question.id ? "active" : ""} ${item.status === "review" ? "warn" : ""}`, children: [_jsx("label", { className: "question-select", children: _jsx("input", { type: "checkbox", checked: selectedSet.has(item.id), onChange: () => toggleSelected(item.id), "aria-label": `Select question ${itemIndex + 1}` }) }), _jsxs("button", { className: "question-open", type: "button", onClick: () => onSelect(item.id), children: [_jsx("span", { children: itemIndex + 1 }), _jsxs("span", { className: "question-list-copy", children: [_jsx("b", { children: item.question }), _jsx("small", { children: item.topic ?? "General" })] }), isVerifiedQuestion(item) ? _jsx(Check, { size: 14 }) : _jsx(CircleHelp, { size: 14 })] }), _jsx("div", { className: "quick-answer-key", "aria-label": `Quick answer key for question ${itemIndex + 1}`, children: item.options.map((option, optionIndex) => _jsx("button", { type: "button", className: itemCorrectIds.includes(option.id) ? "selected" : "", onClick: () => onMarkCorrect(item.id, option.id), children: String.fromCharCode(65 + optionIndex) }, option.id)) })] }, item.id));
+                                        return (_jsxs("div", { className: `question-list-row ${item.id === question.id ? "active" : ""} ${item.status === "review" ? "warn" : ""}`, children: [_jsx("label", { className: "question-select", children: _jsx("input", { type: "checkbox", checked: selectedSet.has(item.id), onChange: () => toggleSelected(item.id), "aria-label": `Select question ${itemIndex + 1}` }) }), _jsxs("button", { className: "question-open", type: "button", onClick: () => onSelect(item.id), children: [_jsx("span", { children: itemIndex + 1 }), _jsxs("span", { className: "question-list-copy", children: [_jsx("b", { children: item.question }), _jsx("small", { children: item.topic ?? "General" })] }), isVerifiedQuestion(item) ? _jsx(Check, { size: 14 }) : _jsx(CircleHelp, { size: 14 })] })] }, item.id));
                                     }), !filteredQuestions.length && _jsxs("div", { className: "question-list-empty", children: [_jsx(Filter, { size: 22 }), _jsx("span", { children: "No matching questions" })] })] }), _jsxs("button", { className: "ghost-button full-button", type: "button", onClick: onAddQuestion, children: [_jsx(Plus, { size: 16 }), " Add question"] })] }), _jsxs("section", { className: "question-editor-card", children: [_jsxs("div", { className: "editor-card-head", children: [_jsxs("div", { children: [_jsxs("div", { className: "editor-status-line", children: [_jsx("span", { className: `status ${ready ? "ready" : "draft"}`, children: ready ? `${correctIds.length} answer${correctIds.length === 1 ? "" : "s"} verified` : "Needs review" }), question.sourcePage && _jsxs("span", { className: "page-chip", children: ["Page ", question.sourcePage] }), _jsxs("span", { className: "page-chip topic-chip", children: [_jsx(Tag, { size: 11 }), " ", question.topic ?? "General"] })] }), _jsxs("h2", { children: ["Question ", index + 1] }), _jsx("p", { children: multiple ? "This is a multiple-answer question. Select every correct choice." : ready ? "The detected answer is selected. You can still change it." : "Select the correct option before using this question in an exam." })] }), _jsxs("div", { className: "editor-actions", children: [_jsx("button", { className: "icon-button", type: "button", title: "Duplicate", onClick: () => onDuplicate(question.id), children: _jsx(Copy, { size: 17 }) }), _jsx("button", { className: "icon-button danger-icon", type: "button", title: "Delete", onClick: () => onDelete(question.id), children: _jsx(Trash2, { size: 17 }) })] })] }), _jsxs("div", { className: "editor-meta-grid", children: [_jsxs("div", { className: "form-group", children: [_jsx("label", { htmlFor: "question-topic", children: "Topic" }), _jsx("input", { id: "question-topic", className: "text-input", value: question.topic ?? "General", onChange: (event) => onUpdateQuestion(question.id, { topic: event.target.value }) })] }), _jsxs("div", { className: "form-group", children: [_jsx("label", { htmlFor: "question-status", children: "Review status" }), _jsxs("select", { id: "question-status", className: "text-input", value: question.status, onChange: (event) => onUpdateQuestion(question.id, { status: event.target.value }), children: [_jsx("option", { value: "verified", disabled: !answerReady, children: "Verified" }), _jsx("option", { value: "review", children: "Needs review" })] })] })] }), _jsxs("div", { className: "form-group", children: [_jsx("label", { htmlFor: "question-text", children: "Question" }), _jsx("textarea", { id: "question-text", className: "question-input", value: question.question, onChange: (event) => onUpdateQuestion(question.id, { question: event.target.value }) })] }), _jsxs("div", { className: "form-group", children: [_jsxs("div", { className: "label-row answer-heading", children: [_jsxs("div", { children: [_jsx("label", { children: "Answer choices" }), _jsx("small", { children: multiple ? "Check all correct answers." : "Choose one correct answer." })] }), _jsxs("select", { className: "answer-mode-select", "aria-label": "Answer selection mode", value: multiple ? "multiple" : "single", onChange: (event) => onSelectionMode(question.id, event.target.value), children: [_jsx("option", { value: "single", children: "Single answer" }), _jsx("option", { value: "multiple", children: "Multiple answers" })] })] }), _jsx("div", { className: "answer-grid", children: question.options.map((option, optionIndex) => {
                                             const selected = correctIds.includes(option.id);
-                                            return _jsxs("div", { className: `answer-row ${selected ? "correct" : ""}`, children: [_jsx(GripVertical, { className: "drag-handle", size: 17 }), _jsx("span", { className: "answer-letter", children: String.fromCharCode(65 + optionIndex) }), _jsx("input", { value: option.text, onChange: (event) => onUpdateOption(question.id, option.id, event.target.value), "aria-label": `Answer ${String.fromCharCode(65 + optionIndex)}` }), _jsx("button", { className: `correct-radio ${selected ? "selected" : ""}`, type: "button", title: selected ? "Correct answer selected" : "Mark as correct", onClick: () => onMarkCorrect(question.id, option.id), children: _jsx(Check, { size: 16 }) }), _jsx("button", { className: "remove-option", type: "button", title: "Remove option", onClick: () => onRemoveOption(question.id, option.id), children: _jsx(X, { size: 15 }) })] }, option.id);
+                                            return _jsxs("div", { className: `answer-row ${selected ? "correct" : ""}`, children: [_jsx("span", { className: "answer-letter", children: String.fromCharCode(65 + optionIndex) }), _jsx("input", { value: option.text, onChange: (event) => onUpdateOption(question.id, option.id, event.target.value), "aria-label": `Answer ${String.fromCharCode(65 + optionIndex)}` }), _jsx("button", { className: `correct-radio ${selected ? "selected" : ""}`, type: "button", title: selected ? "Correct answer selected" : "Mark as correct", onClick: () => onMarkCorrect(question.id, option.id), children: _jsx(Check, { size: 16 }) }), _jsx("button", { className: "remove-option", type: "button", title: "Remove option", onClick: () => onRemoveOption(question.id, option.id), children: _jsx(X, { size: 15 }) })] }, option.id);
                                         }) }), _jsxs("button", { className: "text-button add-option", type: "button", onClick: () => onAddOption(question.id), children: [_jsx(Plus, { size: 15 }), " Add answer choice"] })] }), _jsxs("div", { className: "form-group", children: [_jsx("label", { htmlFor: "explanation", children: "Explanation" }), _jsx("textarea", { id: "explanation", className: "explanation-input", value: question.explanation, onChange: (event) => onUpdateQuestion(question.id, { explanation: event.target.value }), placeholder: "Explain why the selected answer is correct." })] }), _jsxs("div", { className: "editor-footer", children: [_jsx("span", { children: "Changes save automatically in this browser." }), _jsxs("div", { className: "toolbar", children: [_jsxs("button", { className: "ghost-button", type: "button", disabled: !previous, onClick: () => previous && onSelect(previous.id), children: [_jsx(ChevronLeft, { size: 16 }), " Previous"] }), _jsxs("button", { className: "primary-button", type: "button", onClick: () => next ? onSelect(next.id) : onSetup, children: [next ? "Next question" : "Set up exam", _jsx(ChevronRight, { size: 16 })] })] })] })] }, question.id)] })] }));
 }
 function SetupView({ studySet, settings, onSettings, onBack, onStart }) {
     const verified = studySet.questions.filter(isVerifiedQuestion);
     const topics = availableTopics(verified);
     const weak = weakTopics(studySet.attempts);
+    const hasExplanations = verified.some((question) => question.explanation.trim().length > 0);
     const filtered = verified.filter((question) => {
         const topicMatch = !settings.topicFilter || settings.topicFilter === "All topics" || (question.topic ?? "General") === settings.topicFilter;
         const weakMatch = !settings.weakAreasOnly || weak.length === 0 || weak.includes(question.topic ?? "General");
@@ -878,17 +1195,35 @@ function SetupView({ studySet, settings, onSettings, onBack, onStart }) {
     const update = (key, value) => onSettings({ ...settings, [key]: value });
     const maxQuestions = Math.max(1, filtered.length);
     const selectedCount = Math.min(settings.questionCount, maxQuestions);
-    return (_jsxs("div", { className: "page-wrap setup-page", children: [_jsx("div", { className: "page-head", children: _jsxs("div", { children: [_jsx("button", { className: "breadcrumb-button", type: "button", onClick: onBack, children: "Review questions" }), _jsx("span", { className: "breadcrumb-separator", children: "/" }), _jsx("span", { children: "Exam setup" }), _jsx("h1", { children: "Customize your mock exam" }), _jsx("p", { children: "Choose topics, weak areas, question count, timing, and randomization." })] }) }), _jsxs("div", { className: "setup-grid", children: [_jsxs("section", { className: "setup-panel", children: [_jsx("h2", { children: "Exam preferences" }), _jsx("p", { children: "These settings apply only to the next attempt." }), _jsxs("div", { className: "setting-row", children: [_jsxs("div", { className: "setting-copy", children: [_jsx("strong", { children: "Topic" }), _jsx("small", { children: "Practice the whole set or focus on one topic." })] }), _jsxs("select", { value: settings.topicFilter ?? "All topics", onChange: (event) => { update("topicFilter", event.target.value); onSettings({ ...settings, topicFilter: event.target.value, questionCount: Math.min(settings.questionCount, verified.filter((q) => event.target.value === "All topics" || (q.topic ?? "General") === event.target.value).length || 1) }); }, children: [_jsx("option", { children: "All topics" }), topics.map((topic) => _jsx("option", { children: topic }, topic))] })] }), _jsx(ToggleSetting, { label: "Focus on weak areas", description: weak.length ? `Prioritize ${weak.join(", ")}.` : "Completing a few attempts will identify weak topics.", checked: Boolean(settings.weakAreasOnly), onChange: (value) => update("weakAreasOnly", value) }), _jsxs("div", { className: "setting-row", children: [_jsxs("div", { className: "setting-copy", children: [_jsx("strong", { children: "Number of questions" }), _jsxs("small", { children: [filtered.length, " verified questions match your filters."] })] }), _jsx("select", { value: selectedCount, onChange: (event) => update("questionCount", Number(event.target.value)), children: Array.from({ length: maxQuestions }, (_, index) => index + 1).filter((value) => value === maxQuestions || value % 5 === 0 || value === 1).map((value) => _jsx("option", { value: value, children: value }, value)) })] }), _jsx(ToggleSetting, { label: "Shuffle questions", description: "Use a different question order for every attempt.", checked: settings.shuffleQuestions, onChange: (value) => update("shuffleQuestions", value) }), _jsx(ToggleSetting, { label: "Shuffle answer choices", description: "Randomize the choice order without changing the answer key.", checked: settings.shuffleAnswers, onChange: (value) => update("shuffleAnswers", value) }), _jsx(ToggleSetting, { label: "Timed exam", description: "Show a countdown while answering.", checked: settings.timed, onChange: (value) => update("timed", value) }), _jsxs("div", { className: `setting-row ${!settings.timed ? "disabled-setting" : ""}`, children: [_jsxs("div", { className: "setting-copy", children: [_jsx("strong", { children: "Time limit" }), _jsx("small", { children: "Select the exam duration." })] }), _jsx("select", { disabled: !settings.timed, value: settings.minutes, onChange: (event) => update("minutes", Number(event.target.value)), children: [5, 10, 20, 30, 45, 60, 90].map((value) => _jsxs("option", { value: value, children: [value, " minutes"] }, value)) })] }), _jsx(ToggleSetting, { label: "Show explanations", description: "Display explanations in the answer review.", checked: settings.showExplanations, onChange: (value) => update("showExplanations", value) })] }), _jsxs("aside", { className: "preview-panel", children: [_jsxs("div", { className: "preview-header", children: [_jsxs("span", { className: "pill", children: [_jsx(Target, { size: 13 }), " EXAM PREVIEW"] }), _jsx("h2", { children: studySet.title }), _jsx("p", { children: settings.weakAreasOnly && weak.length ? `Weak-area mode: ${weak.join(", ")}` : settings.topicFilter && settings.topicFilter !== "All topics" ? settings.topicFilter : "Mixed-topic practice" })] }), preview && _jsxs("div", { className: "exam-preview-card", children: [_jsx("span", { children: isMultipleQuestion(preview) ? "MULTIPLE ANSWERS" : "QUESTION 01" }), _jsx("h3", { children: preview.question }), preview.options.slice(0, 3).map((option, index) => _jsxs("div", { className: "mini-answer", children: [_jsx("span", { children: String.fromCharCode(65 + index) }), option.text] }, option.id))] }), _jsxs("div", { className: "exam-details", children: [_jsxs("div", { children: [_jsx("strong", { children: Math.min(settings.questionCount, filtered.length) }), _jsx("small", { children: "Questions" })] }), _jsxs("div", { children: [_jsx("strong", { children: settings.timed ? `${settings.minutes}m` : "∞" }), _jsx("small", { children: "Time limit" })] }), _jsxs("div", { children: [_jsx("strong", { children: filtered.length ? new Set(filtered.map((q) => q.topic ?? "General")).size : 0 }), _jsx("small", { children: "Topics" })] })] }), _jsxs("button", { className: "primary-button start-button", type: "button", disabled: !filtered.length, onClick: onStart, children: ["Start mock exam ", _jsx(ChevronRight, { size: 17 })] })] })] })] }));
+    return (_jsxs("div", { className: "page-wrap setup-page", children: [_jsx("div", { className: "page-head", children: _jsxs("div", { children: [_jsx("button", { className: "breadcrumb-button", type: "button", onClick: onBack, children: "Review questions" }), _jsx("span", { className: "breadcrumb-separator", children: "/" }), _jsx("span", { children: "Exam setup" }), _jsx("h1", { children: "Customize your mock exam" }), _jsx("p", { children: "Choose topics, weak areas, question count, timing, and randomization." })] }) }), _jsxs("div", { className: "setup-grid", children: [_jsxs("section", { className: "setup-panel", children: [_jsx("h2", { children: "Exam preferences" }), _jsx("p", { children: "These settings apply only to the next attempt." }), _jsxs("div", { className: "setting-row", children: [_jsxs("div", { className: "setting-copy", children: [_jsx("strong", { children: "Topic" }), _jsx("small", { children: "Practice the whole set or focus on one topic." })] }), _jsxs("select", { value: settings.topicFilter ?? "All topics", onChange: (event) => { update("topicFilter", event.target.value); onSettings({ ...settings, topicFilter: event.target.value, questionCount: Math.min(settings.questionCount, verified.filter((q) => event.target.value === "All topics" || (q.topic ?? "General") === event.target.value).length || 1) }); }, children: [_jsx("option", { children: "All topics" }), topics.map((topic) => _jsx("option", { children: topic }, topic))] })] }), _jsx(ToggleSetting, { label: "Focus on weak areas", description: weak.length ? `Prioritize ${weak.join(", ")}.` : "Completing a few attempts will identify weak topics.", checked: Boolean(settings.weakAreasOnly), onChange: (value) => update("weakAreasOnly", value) }), _jsxs("div", { className: "setting-row", children: [_jsxs("div", { className: "setting-copy", children: [_jsx("strong", { children: "Number of questions" }), _jsxs("small", { children: [filtered.length, " verified questions match your filters."] })] }), _jsx("select", { value: selectedCount, onChange: (event) => update("questionCount", Number(event.target.value)), children: Array.from({ length: maxQuestions }, (_, index) => index + 1).filter((value) => value === maxQuestions || value % 5 === 0 || value === 1).map((value) => _jsx("option", { value: value, children: value }, value)) })] }), _jsx(ToggleSetting, { label: "Shuffle questions", description: "Use a different question order for every attempt.", checked: settings.shuffleQuestions, onChange: (value) => update("shuffleQuestions", value) }), _jsx(ToggleSetting, { label: "Shuffle answer choices", description: "Randomize the choice order without changing the answer key.", checked: settings.shuffleAnswers, onChange: (value) => update("shuffleAnswers", value) }), _jsx(ToggleSetting, { label: "Timed exam", description: "Show a countdown while answering.", checked: settings.timed, onChange: (value) => update("timed", value) }), _jsxs("div", { className: `setting-row ${!settings.timed ? "disabled-setting" : ""}`, children: [_jsxs("div", { className: "setting-copy", children: [_jsx("strong", { children: "Time limit" }), _jsx("small", { children: "Select the exam duration." })] }), _jsx("select", { disabled: !settings.timed, value: settings.minutes, onChange: (event) => update("minutes", Number(event.target.value)), children: [5, 10, 20, 30, 45, 60, 90].map((value) => _jsxs("option", { value: value, children: [value, " minutes"] }, value)) })] }), hasExplanations && _jsx(ToggleSetting, { label: "Show explanations", description: "Display available explanations in the answer review.", checked: settings.showExplanations, onChange: (value) => update("showExplanations", value) }), _jsxs("section", { className: "lifeline-settings", children: [_jsxs("div", { className: "lifeline-settings-head", children: [_jsx("span", { children: _jsx(ShieldCheck, { size: 18 }) }), _jsxs("div", { children: [_jsx("strong", { children: "Practice lifelines" }), _jsx("small", { children: "Turn each aid on or off for this attempt. Every enabled lifeline can be used once." })] })] }), _jsxs("div", { className: "lifeline-toggle-grid", children: [_jsx(LifelineToggle, { icon: _jsx(Scissors, { size: 17 }), label: "50:50", description: "Remove incorrect choices until two remain.", checked: Boolean(settings.lifelineFiftyFifty), onChange: (value) => update("lifelineFiftyFifty", value) }), _jsx(LifelineToggle, { icon: _jsx(Users, { size: 17 }), label: "Audience Poll", description: "Show a simulated vote for the current question.", checked: Boolean(settings.lifelineAudiencePoll), onChange: (value) => update("lifelineAudiencePoll", value) }), _jsx(LifelineToggle, { icon: _jsx(Snowflake, { size: 17 }), label: "Time Freeze", description: "Pause a timed exam for 60 seconds.", checked: Boolean(settings.lifelineTimeFreeze), onChange: (value) => update("lifelineTimeFreeze", value), disabled: !settings.timed }), _jsx(LifelineToggle, { icon: _jsx(Lightbulb, { size: 17 }), label: "Clue", description: "Reveal the saved explanation or a source-page hint.", checked: Boolean(settings.lifelineClue), onChange: (value) => update("lifelineClue", value) })] })] })] }), _jsxs("aside", { className: "preview-panel", children: [_jsxs("div", { className: "preview-header", children: [_jsxs("span", { className: "pill", children: [_jsx(Target, { size: 13 }), " EXAM PREVIEW"] }), _jsx("h2", { children: studySet.title }), _jsx("p", { children: settings.weakAreasOnly && weak.length ? `Weak-area mode: ${weak.join(", ")}` : settings.topicFilter && settings.topicFilter !== "All topics" ? settings.topicFilter : "Mixed-topic practice" })] }), preview && _jsxs("div", { className: "exam-preview-card", children: [_jsx("span", { children: isMultipleQuestion(preview) ? "MULTIPLE ANSWERS" : "QUESTION 01" }), _jsx("h3", { children: preview.question }), preview.options.slice(0, 3).map((option, index) => _jsxs("div", { className: "mini-answer", children: [_jsx("span", { children: String.fromCharCode(65 + index) }), option.text] }, option.id))] }), _jsxs("div", { className: "exam-details", children: [_jsxs("div", { children: [_jsx("strong", { children: Math.min(settings.questionCount, filtered.length) }), _jsx("small", { children: "Questions" })] }), _jsxs("div", { children: [_jsx("strong", { children: settings.timed ? `${settings.minutes}m` : "∞" }), _jsx("small", { children: "Time limit" })] }), _jsxs("div", { children: [_jsx("strong", { children: filtered.length ? new Set(filtered.map((q) => q.topic ?? "General")).size : 0 }), _jsx("small", { children: "Topics" })] })] }), _jsxs("button", { className: "primary-button start-button", type: "button", disabled: !filtered.length, onClick: onStart, children: ["Start mock exam ", _jsx(ChevronRight, { size: 17 })] })] })] })] }));
 }
 function ToggleSetting({ label, description, checked, onChange }) {
     return _jsxs("label", { className: "setting-row", children: [_jsxs("div", { className: "setting-copy", children: [_jsx("strong", { children: label }), _jsx("small", { children: description })] }), _jsx("input", { className: "switch-input", type: "checkbox", checked: checked, onChange: (event) => onChange(event.target.checked) })] });
 }
-function ExamView({ exam, settings, onAnswer, onFlag, onMove, onSubmit, reviewOpen, onCloseReview, onConfirmSubmit }) {
+function LifelineToggle({ icon, label, description, checked, onChange, disabled = false }) {
+    return _jsxs("label", { className: `lifeline-toggle-card ${checked ? "enabled" : ""} ${disabled ? "disabled" : ""}`, children: [_jsx("span", { className: "lifeline-toggle-icon", children: icon }), _jsxs("span", { className: "lifeline-toggle-copy", children: [_jsx("strong", { children: label }), _jsx("small", { children: description })] }), _jsx("input", { className: "switch-input", type: "checkbox", checked: checked, disabled: disabled, onChange: (event) => onChange(event.target.checked) })] });
+}
+function ExamView({ exam, settings, onAnswer, onFlag, onMove, onSubmit, reviewOpen, onCloseReview, onConfirmSubmit, onFiftyFifty, onAudiencePoll, onTimeFreeze, onClue }) {
     const [navFilter, setNavFilter] = useState("all");
+    const [navOpen, setNavOpen] = useState(false);
     if (!exam)
         return null;
     const question = exam.questions[exam.currentIndex];
     const selected = exam.responses[question.id] ?? [];
+    const lifelines = exam.lifelines ?? {
+        fiftyFiftyUsed: false,
+        audiencePollUsed: false,
+        timeFreezeUsed: false,
+        clueUsed: false,
+        removedOptionIds: {},
+        audiencePolls: {},
+        clues: {}
+    };
+    const removedIds = new Set(lifelines.removedOptionIds?.[question.id] ?? []);
+    const audiencePoll = lifelines.audiencePolls?.[question.id];
+    const clue = lifelines.clues?.[question.id];
+    const freezeSeconds = Math.max(0, Math.ceil(((lifelines.timerFrozenUntil ?? 0) - Date.now()) / 1000));
+    const hasMultipleQuestions = exam.questions.some(isMultipleQuestion);
     const statusFor = (item) => {
         const responses = exam.responses[item.id] ?? [];
         const expected = isMultipleQuestion(item) ? Math.max(2, getCorrectIds(item).length) : 1;
@@ -907,13 +1242,27 @@ function ExamView({ exam, settings, onAnswer, onFlag, onMove, onSubmit, reviewOp
             acc.flagged += 1;
         return acc;
     }, { unanswered: 0, incomplete: 0, answered: 0, flagged: 0 });
-    const visibleQuestions = exam.questions.map((item, index) => ({ item, index, status: statusFor(item) })).filter(({ status }) => navFilter === "all" || status[navFilter]);
+    const visibleQuestions = exam.questions
+        .map((item, index) => ({ item, index, status: statusFor(item) }))
+        .filter(({ status }) => navFilter === "all" || status[navFilter]);
     const multiple = isMultipleQuestion(question);
     const expectedSelections = Math.max(2, getCorrectIds(question).length);
-    return (_jsxs("div", { className: "exam-shell", children: [_jsxs("header", { className: "exam-topbar", children: [_jsxs("div", { className: "exam-brand", children: [_jsx("span", { className: "brand-mark", children: "Q" }), _jsxs("span", { children: [_jsx("strong", { children: "QuizForge Exam" }), _jsx("small", { children: question.topic ?? "Practice mode" })] })] }), _jsxs("div", { className: "exam-meta", children: [_jsxs("div", { className: "autosave-status", children: [_jsx(CheckCircle2, { size: 15 }), _jsx("span", { children: "Saved" })] }), _jsxs("div", { className: "timer", children: [_jsx(Clock3, { size: 17 }), _jsx("span", { children: settings.timed ? formatDuration(exam.remainingSeconds) : "Untimed" }), _jsx("small", { children: settings.timed ? "remaining" : "no limit" })] }), _jsx("button", { className: "primary-button compact", type: "button", onClick: onSubmit, children: "Review & submit" })] })] }), _jsxs("div", { className: "exam-body", children: [_jsxs("aside", { className: "exam-nav", children: [_jsx("h2", { children: "Question navigator" }), _jsxs("p", { children: [counts.answered, " complete \u00B7 ", counts.unanswered, " unanswered"] }), _jsxs("div", { className: "exam-nav-filters", children: [_jsxs("button", { type: "button", className: navFilter === "all" ? "active" : "", onClick: () => setNavFilter("all"), children: ["All ", _jsx("span", { children: exam.questions.length })] }), _jsxs("button", { type: "button", className: navFilter === "unanswered" ? "active" : "", onClick: () => setNavFilter("unanswered"), children: ["Unanswered ", _jsx("span", { children: counts.unanswered })] }), _jsxs("button", { type: "button", className: navFilter === "incomplete" ? "active" : "", onClick: () => setNavFilter("incomplete"), children: ["Incomplete ", _jsx("span", { children: counts.incomplete })] }), _jsxs("button", { type: "button", className: navFilter === "flagged" ? "active" : "", onClick: () => setNavFilter("flagged"), children: ["Flagged ", _jsx("span", { children: counts.flagged })] }), _jsxs("button", { type: "button", className: navFilter === "answered" ? "active" : "", onClick: () => setNavFilter("answered"), children: ["Complete ", _jsx("span", { children: counts.answered })] })] }), _jsx("div", { className: "question-dots", children: visibleQuestions.map(({ item, index, status }) => _jsx("button", { type: "button", className: `question-dot ${index === exam.currentIndex ? "current" : status.answered ? "answered" : ""} ${status.incomplete ? "incomplete" : ""} ${status.flagged ? "flagged" : ""}`, onClick: () => onMove(index), children: index + 1 }, item.id)) }), !visibleQuestions.length && _jsx("div", { className: "nav-empty", children: "No questions in this filter." }), _jsxs("div", { className: "exam-legend", children: [_jsxs("span", { children: [_jsx("i", { className: "legend-current" }), " Current"] }), _jsxs("span", { children: [_jsx("i", { className: "legend-answered" }), " Complete"] }), _jsxs("span", { children: [_jsx("i", { className: "legend-incomplete" }), " Incomplete"] }), _jsxs("span", { children: [_jsx("i", { className: "legend-flagged" }), " Flagged"] }), _jsxs("span", { children: [_jsx("i", {}), " Unanswered"] })] })] }), _jsxs("main", { className: "exam-main", children: [_jsxs("div", { className: "exam-progress", children: [_jsxs("span", { children: ["Question ", exam.currentIndex + 1, " of ", exam.questions.length] }), _jsxs("span", { children: [Math.round(((exam.currentIndex + 1) / exam.questions.length) * 100), "%"] })] }), _jsx("div", { className: "exam-progress-track", children: _jsx("span", { style: { width: `${((exam.currentIndex + 1) / exam.questions.length) * 100}%` } }) }), _jsxs("section", { className: "exam-question-card", children: [_jsxs("div", { className: "question-kicker", children: [_jsxs("span", { children: [multiple ? "MULTIPLE ANSWERS" : "MULTIPLE CHOICE", " \u00B7 ", question.topic ?? "General"] }), _jsxs("button", { className: `flag-button ${exam.flagged[question.id] ? "flagged" : ""}`, type: "button", onClick: onFlag, children: [_jsx(Flag, { size: 15 }), " ", exam.flagged[question.id] ? "Flagged" : "Flag for review"] })] }), _jsx("h1", { children: question.question }), multiple && _jsxs("div", { className: "selection-hint", children: [_jsx(Sparkles, { size: 15 }), _jsxs("span", { children: ["Select all correct answers", getCorrectIds(question).length > 1 ? ` (${expectedSelections} expected)` : "", "."] })] }), _jsx("div", { className: "exam-options", children: question.options.map((option, index) => {
+    const progressPercent = Math.round((counts.answered / Math.max(1, exam.questions.length)) * 100);
+    const lifelinesEnabled = Boolean(settings.lifelineFiftyFifty
+        || settings.lifelineAudiencePoll
+        || settings.lifelineTimeFreeze
+        || settings.lifelineClue);
+    function moveFromNavigator(index) {
+        onMove(index);
+        setNavOpen(false);
+    }
+    return (_jsxs("div", { className: "exam-shell streamlined-exam-shell", children: [_jsxs("header", { className: "exam-topbar", children: [_jsxs("div", { className: "exam-brand", children: [_jsx("span", { className: "brand-mark", children: "Q" }), _jsxs("span", { children: [_jsx("strong", { children: "QuizForge Exam" }), _jsx("small", { children: question.topic ?? "Practice mode" })] })] }), _jsxs("button", { className: "exam-nav-trigger", type: "button", onClick: () => setNavOpen(true), children: [_jsx(Menu, { size: 17 }), " Questions"] }), _jsxs("div", { className: "exam-meta", children: [_jsxs("div", { className: "autosave-status", children: [_jsx(CheckCircle2, { size: 15 }), _jsx("span", { children: "Saved" })] }), _jsxs("div", { className: `timer ${freezeSeconds > 0 ? "frozen" : ""}`, children: [_jsx(Clock3, { size: 17 }), _jsx("span", { children: settings.timed ? formatDuration(exam.remainingSeconds) : "Untimed" }), _jsx("small", { children: freezeSeconds > 0 ? `frozen ${freezeSeconds}s` : settings.timed ? "remaining" : "no limit" })] }), _jsx("button", { className: "primary-button compact", type: "button", onClick: onSubmit, children: "Review & submit" })] })] }), navOpen && _jsx("button", { className: "exam-nav-scrim", type: "button", "aria-label": "Close question navigator", onClick: () => setNavOpen(false) }), _jsxs("div", { className: "exam-body", children: [_jsxs("aside", { className: `exam-nav simplified-exam-nav ${navOpen ? "open" : ""}`, children: [_jsxs("div", { className: "exam-nav-heading", children: [_jsxs("div", { children: [_jsx("h2", { children: "Questions" }), _jsxs("p", { children: [counts.answered, " of ", exam.questions.length, " complete"] })] }), _jsx("button", { className: "icon-button exam-nav-close", type: "button", "aria-label": "Close navigator", onClick: () => setNavOpen(false), children: _jsx(X, { size: 17 }) })] }), _jsxs("div", { className: "exam-nav-progress", children: [_jsxs("div", { children: [_jsxs("strong", { children: [progressPercent, "%"] }), _jsx("small", { children: "progress" })] }), _jsx("span", { children: _jsx("i", { style: { width: `${progressPercent}%` } }) })] }), _jsxs("div", { className: "exam-nav-filters compact-filters", children: [_jsxs("button", { type: "button", className: navFilter === "all" ? "active" : "", onClick: () => setNavFilter("all"), children: ["All ", _jsx("span", { children: exam.questions.length })] }), _jsxs("button", { type: "button", className: navFilter === "unanswered" ? "active" : "", onClick: () => setNavFilter("unanswered"), children: ["Unanswered ", _jsx("span", { children: counts.unanswered })] }), hasMultipleQuestions && _jsxs("button", { type: "button", className: navFilter === "incomplete" ? "active" : "", onClick: () => setNavFilter("incomplete"), children: ["Incomplete ", _jsx("span", { children: counts.incomplete })] }), _jsxs("button", { type: "button", className: navFilter === "flagged" ? "active" : "", onClick: () => setNavFilter("flagged"), children: ["Flagged ", _jsx("span", { children: counts.flagged })] })] }), _jsx("div", { className: "question-dots", children: visibleQuestions.map(({ item, index, status }) => _jsx("button", { type: "button", "aria-label": `Go to question ${index + 1}`, className: `question-dot ${index === exam.currentIndex ? "current" : status.answered ? "answered" : ""} ${status.incomplete ? "incomplete" : ""} ${status.flagged ? "flagged" : ""}`, onClick: () => moveFromNavigator(index), children: index + 1 }, item.id)) }), !visibleQuestions.length && _jsx("div", { className: "nav-empty", children: "No questions in this filter." })] }), _jsxs("main", { className: "exam-main", children: [_jsxs("div", { className: "exam-progress", children: [_jsxs("span", { children: ["Question ", exam.currentIndex + 1, " of ", exam.questions.length] }), _jsxs("span", { children: [Math.round(((exam.currentIndex + 1) / exam.questions.length) * 100), "%"] })] }), _jsx("div", { className: "exam-progress-track", children: _jsx("span", { style: { width: `${((exam.currentIndex + 1) / exam.questions.length) * 100}%` } }) }), _jsxs("section", { className: "exam-question-card", children: [_jsxs("div", { className: "question-kicker", children: [_jsxs("span", { children: [multiple ? "MULTIPLE ANSWERS" : "MULTIPLE CHOICE", " \u00B7 ", question.topic ?? "General"] }), _jsxs("button", { className: `flag-button ${exam.flagged[question.id] ? "flagged" : ""}`, type: "button", onClick: onFlag, children: [_jsx(Flag, { size: 15 }), " ", exam.flagged[question.id] ? "Flagged" : "Flag for review"] })] }), _jsx("h1", { children: question.question }), lifelinesEnabled && (_jsxs("section", { className: "lifeline-bar", "aria-label": "Exam lifelines", children: [_jsxs("div", { className: "lifeline-bar-title", children: [_jsx(ShieldCheck, { size: 16 }), _jsxs("span", { children: [_jsx("strong", { children: "Lifelines" }), _jsx("small", { children: "Each can be used once" })] })] }), _jsxs("div", { className: "lifeline-actions", children: [settings.lifelineFiftyFifty && _jsxs("button", { className: `lifeline-button ${lifelines.fiftyFiftyUsed ? "used" : ""}`, type: "button", disabled: lifelines.fiftyFiftyUsed || multiple || question.options.length <= 2, onClick: onFiftyFifty, children: [_jsx(Scissors, { size: 16 }), _jsx("span", { children: "50:50" })] }), settings.lifelineAudiencePoll && _jsxs("button", { className: `lifeline-button ${lifelines.audiencePollUsed ? "used" : ""}`, type: "button", disabled: lifelines.audiencePollUsed || multiple, onClick: onAudiencePoll, children: [_jsx(Users, { size: 16 }), _jsx("span", { children: "Audience" })] }), settings.lifelineTimeFreeze && _jsxs("button", { className: `lifeline-button ${lifelines.timeFreezeUsed ? "used" : ""} ${freezeSeconds > 0 ? "active" : ""}`, type: "button", disabled: lifelines.timeFreezeUsed || !settings.timed, onClick: onTimeFreeze, children: [_jsx(Snowflake, { size: 16 }), _jsx("span", { children: freezeSeconds > 0 ? `${freezeSeconds}s` : "Freeze" })] }), settings.lifelineClue && _jsxs("button", { className: `lifeline-button ${lifelines.clueUsed ? "used" : ""}`, type: "button", disabled: lifelines.clueUsed, onClick: onClue, children: [_jsx(Lightbulb, { size: 16 }), _jsx("span", { children: "Clue" })] })] })] })), clue && _jsxs("div", { className: "lifeline-clue", children: [_jsx(Lightbulb, { size: 18 }), _jsxs("div", { children: [_jsx("strong", { children: "Your clue" }), _jsx("p", { children: clue })] })] }), audiencePoll && _jsxs("div", { className: "audience-summary", children: [_jsx(Users, { size: 16 }), _jsx("span", { children: "The audience has voted. Percentages appear beside each remaining choice." })] }), multiple && _jsxs("div", { className: "selection-hint", children: [_jsx(Sparkles, { size: 15 }), _jsxs("span", { children: ["Select all correct answers", getCorrectIds(question).length > 1 ? ` (${expectedSelections} expected)` : "", "."] })] }), _jsx("div", { className: "exam-options", children: question.options.map((option, index) => {
+                                            if (removedIds.has(option.id))
+                                                return null;
                                             const isSelected = selected.includes(option.id);
-                                            return _jsxs("button", { className: `exam-option ${isSelected ? "selected" : ""}`, type: "button", onClick: () => onAnswer(option.id), children: [_jsx("span", { className: "option-letter", children: String.fromCharCode(65 + index) }), _jsx("span", { children: option.text }), isSelected && _jsx("span", { className: "option-check", children: _jsx(Check, { size: 18 }) })] }, option.id);
-                                        }) }), _jsxs("div", { className: "exam-footer", children: [_jsxs("button", { className: "ghost-button", type: "button", disabled: exam.currentIndex === 0, onClick: () => onMove(exam.currentIndex - 1), children: [_jsx(ChevronLeft, { size: 16 }), " Previous"] }), exam.currentIndex < exam.questions.length - 1 ? _jsxs("button", { className: "primary-button", type: "button", onClick: () => onMove(exam.currentIndex + 1), children: ["Next question ", _jsx(ChevronRight, { size: 16 })] }) : _jsxs("button", { className: "primary-button", type: "button", onClick: onSubmit, children: ["Review exam ", _jsx(Check, { size: 16 })] })] })] }, question.id)] })] }), reviewOpen && _jsx("div", { className: "modal-backdrop exam-review-backdrop", children: _jsxs("section", { className: "submit-review-modal", role: "dialog", "aria-modal": "true", "aria-labelledby": "submit-review-title", children: [_jsx("button", { className: "modal-close", type: "button", "aria-label": "Close review", onClick: onCloseReview, children: _jsx(X, { size: 18 }) }), _jsx("span", { className: "modal-success-orb review-orb", children: _jsx(ListFilter, { size: 28 }) }), _jsx("p", { className: "eyebrow", children: "FINAL REVIEW" }), _jsx("h2", { id: "submit-review-title", children: "Ready to submit?" }), _jsx("p", { children: "Check unanswered, incomplete, and flagged questions before your answers are scored." }), _jsxs("div", { className: "submit-review-stats", children: [_jsxs("button", { type: "button", onClick: () => { setNavFilter("unanswered"); onCloseReview(); }, children: [_jsx("strong", { children: counts.unanswered }), _jsx("small", { children: "Unanswered" })] }), _jsxs("button", { type: "button", onClick: () => { setNavFilter("incomplete"); onCloseReview(); }, children: [_jsx("strong", { children: counts.incomplete }), _jsx("small", { children: "Incomplete" })] }), _jsxs("button", { type: "button", onClick: () => { setNavFilter("flagged"); onCloseReview(); }, children: [_jsx("strong", { children: counts.flagged }), _jsx("small", { children: "Flagged" })] }), _jsxs("div", { children: [_jsx("strong", { children: counts.answered }), _jsx("small", { children: "Complete" })] })] }), _jsx("div", { className: "submit-question-grid", children: exam.questions.map((item, index) => { const status = statusFor(item); return _jsx("button", { type: "button", className: `${status.answered ? "complete" : status.incomplete ? "incomplete" : "unanswered"} ${status.flagged ? "flagged" : ""}`, onClick: () => { onMove(index); onCloseReview(); }, children: index + 1 }, item.id); }) }), _jsxs("div", { className: "submit-review-actions", children: [_jsx("button", { className: "ghost-button", type: "button", onClick: onCloseReview, children: "Return to exam" }), _jsxs("button", { className: "primary-button", type: "button", onClick: onConfirmSubmit, children: ["Submit now ", _jsx(Check, { size: 16 })] })] })] }) })] }));
+                                            const pollValue = audiencePoll?.[option.id];
+                                            return (_jsxs("button", { className: `exam-option ${isSelected ? "selected" : ""} ${pollValue !== undefined ? "with-poll" : ""}`, type: "button", onClick: () => onAnswer(option.id), children: [_jsx("span", { className: "option-letter", children: String.fromCharCode(65 + index) }), _jsx("span", { className: "option-text", children: option.text }), pollValue !== undefined && _jsxs("span", { className: "audience-poll", children: [_jsx("i", { style: { width: `${pollValue}%` } }), _jsxs("b", { children: [pollValue, "%"] })] }), isSelected && _jsx("span", { className: "option-check", children: _jsx(Check, { size: 18 }) })] }, option.id));
+                                        }) }), _jsxs("div", { className: "exam-footer", children: [_jsxs("button", { className: "ghost-button", type: "button", disabled: exam.currentIndex === 0, onClick: () => onMove(exam.currentIndex - 1), children: [_jsx(ChevronLeft, { size: 16 }), " Previous"] }), exam.currentIndex < exam.questions.length - 1 ? _jsxs("button", { className: "primary-button", type: "button", onClick: () => onMove(exam.currentIndex + 1), children: ["Next question ", _jsx(ChevronRight, { size: 16 })] }) : _jsxs("button", { className: "primary-button", type: "button", onClick: onSubmit, children: ["Review exam ", _jsx(Check, { size: 16 })] })] })] }, question.id)] })] }), reviewOpen && _jsx("div", { className: "modal-backdrop exam-review-backdrop", children: _jsxs("section", { className: "submit-review-modal", role: "dialog", "aria-modal": "true", "aria-labelledby": "submit-review-title", children: [_jsx("button", { className: "modal-close", type: "button", "aria-label": "Close review", onClick: onCloseReview, children: _jsx(X, { size: 18 }) }), _jsx("span", { className: "modal-success-orb review-orb", children: _jsx(ListFilter, { size: 28 }) }), _jsx("p", { className: "eyebrow", children: "FINAL REVIEW" }), _jsx("h2", { id: "submit-review-title", children: "Ready to submit?" }), _jsx("p", { children: "Check unanswered, incomplete, and flagged questions before your answers are scored." }), _jsxs("div", { className: "submit-review-stats", children: [_jsxs("button", { type: "button", onClick: () => { setNavFilter("unanswered"); onCloseReview(); setNavOpen(true); }, children: [_jsx("strong", { children: counts.unanswered }), _jsx("small", { children: "Unanswered" })] }), hasMultipleQuestions && _jsxs("button", { type: "button", onClick: () => { setNavFilter("incomplete"); onCloseReview(); setNavOpen(true); }, children: [_jsx("strong", { children: counts.incomplete }), _jsx("small", { children: "Incomplete" })] }), _jsxs("button", { type: "button", onClick: () => { setNavFilter("flagged"); onCloseReview(); setNavOpen(true); }, children: [_jsx("strong", { children: counts.flagged }), _jsx("small", { children: "Flagged" })] }), _jsxs("div", { children: [_jsx("strong", { children: counts.answered }), _jsx("small", { children: "Complete" })] })] }), _jsx("div", { className: "submit-question-grid", children: exam.questions.map((item, index) => { const status = statusFor(item); return _jsx("button", { type: "button", className: `${status.answered ? "complete" : status.incomplete ? "incomplete" : "unanswered"} ${status.flagged ? "flagged" : ""}`, onClick: () => { onMove(index); onCloseReview(); }, children: index + 1 }, item.id); }) }), _jsxs("div", { className: "submit-review-actions", children: [_jsx("button", { className: "ghost-button", type: "button", onClick: onCloseReview, children: "Return to exam" }), _jsxs("button", { className: "primary-button", type: "button", onClick: onConfirmSubmit, children: ["Submit now ", _jsx(Check, { size: 16 })] })] })] }) })] }));
 }
 function ResultsView({ details, settings, exam, onRetake, onRetakeWrong, onDashboard }) {
     const correct = details.filter((detail) => detail.correct).length;

@@ -15,9 +15,7 @@ import {
   Filter,
   Flag,
   FolderOpen,
-  GripVertical,
   Home,
-  Image,
   Layers3,
   Library,
   ListFilter,
@@ -25,11 +23,16 @@ import {
   Moon,
   Plus,
   RotateCcw,
-  ScanText,
   Search,
   Settings2,
   Sparkles,
   Sun,
+  Scissors,
+  Users,
+  Snowflake,
+  Lightbulb,
+  Bot,
+  ShieldCheck,
   Tag,
   Target,
   Trash2,
@@ -38,9 +41,7 @@ import {
   X
 } from "lucide-react";
 import type { ExamQuestion, ExamSession, ExamSettings, Question, StudySet, UploadDraft } from "./types.js";
-import { createDemoSet } from "./data/demo.js";
-import { combinePastedQuestionsAndAnswers } from "./lib/paste.js";
-import { extractImageText, extractPdfText } from "./lib/pdf.js";
+import { extractPdfText } from "./lib/pdf.js";
 import { generateLocalQuestions, parseQuestionBankDetailed } from "./lib/parser.js";
 import { clearExamRecovery, clearUploadDraft, loadExamRecovery, loadStudySets, loadTheme, loadUploadDraft, saveExamRecovery, saveStudySets, saveTheme, saveUploadDraft } from "./lib/storage.js";
 import { bestScore, formatDate, formatDuration, shuffle, stripExtension, uid } from "./lib/utils.js";
@@ -57,19 +58,22 @@ interface ResultDetail {
   correct: boolean;
 }
 
-interface ImportSummary {
-  title: string;
-  extracted: number;
-  expected: number;
-  verified: number;
-  warnings: string[];
+
+interface PasteAnswerDraft {
+  id: string;
+  text: string;
+  correct: boolean;
 }
 
 interface PasteSection {
   id: string;
   title: string;
-  questions: string;
-  answers: string;
+  topic: string;
+  question: string;
+  answers: PasteAnswerDraft[];
+  selectionMode: "single" | "multiple";
+  activeTab: "question" | "answers";
+  expanded: boolean;
 }
 
 interface PendingImport {
@@ -82,13 +86,76 @@ interface PendingImport {
   issues: ValidationIssue[];
 }
 
+function createPasteAnswer(text = "", correct = false): PasteAnswerDraft {
+  return { id: uid(), text, correct };
+}
+
 function createPasteSection(): PasteSection {
   return {
     id: uid(),
     title: "",
-    questions: "",
-    answers: ""
+    topic: "General",
+    question: "",
+    answers: [createPasteAnswer(), createPasteAnswer(), createPasteAnswer(), createPasteAnswer()],
+    selectionMode: "single",
+    activeTab: "question",
+    expanded: true
   };
+}
+
+function normalizePasteSections(rawSections: unknown): PasteSection[] {
+  if (!Array.isArray(rawSections) || rawSections.length === 0) return [createPasteSection()];
+
+  const normalized = rawSections.map((rawValue) => {
+    const raw = (rawValue && typeof rawValue === "object" ? rawValue : {}) as Record<string, unknown>;
+    const rawAnswers = raw.answers;
+
+    if (typeof raw.question === "string" && Array.isArray(rawAnswers)) {
+      const answers = rawAnswers
+        .filter((answer): answer is Record<string, unknown> => Boolean(answer && typeof answer === "object"))
+        .map((answer) => ({
+          id: typeof answer.id === "string" ? answer.id : uid(),
+          text: typeof answer.text === "string" ? answer.text : "",
+          correct: Boolean(answer.correct)
+        }));
+      while (answers.length < 2) answers.push(createPasteAnswer());
+      return {
+        id: typeof raw.id === "string" ? raw.id : uid(),
+        title: typeof raw.title === "string" ? raw.title : "",
+        topic: typeof raw.topic === "string" && raw.topic.trim() ? raw.topic : "General",
+        question: raw.question,
+        answers,
+        selectionMode: raw.selectionMode === "multiple" ? "multiple" as const : "single" as const,
+        activeTab: raw.activeTab === "answers" ? "answers" as const : "question" as const,
+        expanded: raw.expanded !== false
+      };
+    }
+
+    // Migrate the old bulk Questions + Answers browser draft into one editable card.
+    const legacyQuestion = typeof raw.questions === "string" ? raw.questions : "";
+    const legacyAnswerText = typeof rawAnswers === "string" ? rawAnswers : "";
+    const legacyAnswers = legacyAnswerText
+      .split(/\n+/)
+      .map((line) => line.replace(/^\s*(?:\d+\s*[.)-]?\s*)?/, "").trim())
+      .filter(Boolean)
+      .slice(0, 8)
+      .map((line) => createPasteAnswer(line));
+    while (legacyAnswers.length < 4) legacyAnswers.push(createPasteAnswer());
+    return {
+      id: typeof raw.id === "string" ? raw.id : uid(),
+      title: typeof raw.title === "string" ? raw.title : "",
+      topic: typeof raw.title === "string" && raw.title.trim() ? raw.title : "General",
+      question: legacyQuestion,
+      answers: legacyAnswers,
+      selectionMode: "single" as const,
+      activeTab: "question" as const,
+      expanded: true
+    };
+  });
+
+  if (!normalized.length) return [createPasteSection()];
+  const firstExpanded = normalized.findIndex((section) => section.expanded);
+  return normalized.map((section, index) => ({ ...section, expanded: firstExpanded === -1 ? index === 0 : index === firstExpanded }));
 }
 
 
@@ -136,27 +203,28 @@ const defaultSettings: ExamSettings = {
   minutes: 30,
   showExplanations: true,
   topicFilter: "All topics",
-  weakAreasOnly: false
+  weakAreasOnly: false,
+  lifelineFiftyFifty: true,
+  lifelineAudiencePoll: true,
+  lifelineTimeFreeze: true,
+  lifelineClue: true
 };
 
 function App() {
   const [view, setView] = useState<View>("dashboard");
   const [theme, setTheme] = useState<"light" | "dark">(() => loadTheme());
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [studySets, setStudySets] = useState<StudySet[]>(() => {
-    const stored = loadStudySets();
-    return stored.length ? stored : [createDemoSet()];
-  });
+  const [studySets, setStudySets] = useState<StudySet[]>(() => loadStudySets());
   const [initialUploadDraft] = useState<UploadDraft | null>(() => loadUploadDraft());
   const [initialExamRecovery] = useState(() => loadExamRecovery());
   const [activeSetId, setActiveSetId] = useState<string | null>(null);
   const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [recoveredFileName, setRecoveredFileName] = useState(initialUploadDraft?.fileName ?? "");
-  const [pasteSections, setPasteSections] = useState<PasteSection[]>(() => initialUploadDraft?.pasteSections?.length ? initialUploadDraft.pasteSections : [createPasteSection()]);
+  const [pasteSections, setPasteSections] = useState<PasteSection[]>(() => normalizePasteSections(initialUploadDraft?.pasteSections));
   const [studyTitle, setStudyTitle] = useState(initialUploadDraft?.title ?? "");
   const [aiEnhanced, setAiEnhanced] = useState(initialUploadDraft?.aiEnhanced ?? false);
-  const [ocrEnabled, setOcrEnabled] = useState(initialUploadDraft?.ocrEnabled ?? true);
+  const [ocrEnabled] = useState(false);
   const [aiConfigured, setAiConfigured] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [processingProgress, setProcessingProgress] = useState(0);
@@ -166,7 +234,6 @@ function App() {
   const [exam, setExam] = useState<ExamSession | null>(null);
   const [resultDetails, setResultDetails] = useState<ResultDetail[]>([]);
   const [toast, setToast] = useState(initialUploadDraft ? "Your unfinished paste draft was recovered" : "");
-  const [importSummary, setImportSummary] = useState<ImportSummary | null>(null);
   const [pendingImport, setPendingImport] = useState<PendingImport | null>(null);
   const [submitReviewOpen, setSubmitReviewOpen] = useState(false);
   const [recoveryAvailable, setRecoveryAvailable] = useState(Boolean(initialExamRecovery));
@@ -194,7 +261,7 @@ function App() {
   }, [studySets]);
 
   useEffect(() => {
-    const hasDraftContent = Boolean(studyTitle.trim() || pasteSections.some((section) => section.title.trim() || section.questions.trim() || section.answers.trim()) || selectedFile);
+    const hasDraftContent = Boolean(studyTitle.trim() || pasteSections.some((section) => section.title.trim() || section.question.trim() || section.answers.some((answer) => answer.text.trim())) || selectedFile);
     if (!hasDraftContent) return;
     saveUploadDraft({
       title: studyTitle,
@@ -233,7 +300,12 @@ function App() {
       return;
     }
     const timer = window.setInterval(() => {
-      setExam((current) => current ? { ...current, remainingSeconds: Math.max(0, current.remainingSeconds - 1) } : current);
+      setExam((current) => {
+        if (!current) return current;
+        const frozenUntil = current.lifelines?.timerFrozenUntil ?? 0;
+        if (frozenUntil > Date.now()) return { ...current };
+        return { ...current, remainingSeconds: Math.max(0, current.remainingSeconds - 1) };
+      });
     }, 1000);
     return () => window.clearInterval(timer);
   }, [view, exam?.remainingSeconds, settings.timed]);
@@ -269,7 +341,6 @@ function App() {
     setPasteSections([createPasteSection()]);
     setStudyTitle("");
     setAiEnhanced(false);
-    setOcrEnabled(true);
     clearUploadDraft();
     setToast("Draft cleared");
   }
@@ -298,13 +369,17 @@ function App() {
   }
 
   function updatePasteSection(id: string, patch: Partial<PasteSection>) {
-    setPasteSections((current) => current.map((section) => section.id === id ? { ...section, ...patch } : section));
+    setPasteSections((current) => current.map((section) => {
+      if (patch.expanded === true) return section.id === id ? { ...section, ...patch } : { ...section, expanded: false };
+      return section.id === id ? { ...section, ...patch } : section;
+    }));
   }
 
   function addPasteSection() {
-    setPasteSections((current) => [...current, createPasteSection()]);
+    const section = createPasteSection();
+    setPasteSections((current) => [...current.map((item) => ({ ...item, expanded: false })), section]);
     window.setTimeout(() => {
-      document.querySelector(".paste-section-card:last-of-type")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      document.querySelector(".manual-question-card:last-of-type")?.scrollIntoView({ behavior: "smooth", block: "center" });
     }, 60);
   }
 
@@ -315,38 +390,34 @@ function App() {
   }
 
   async function createStudySet() {
-    const populatedSections = pasteSections.filter((section) => section.questions.trim().length >= 10);
+    const populatedSections = pasteSections.filter((section) => section.question.trim().length >= 3);
     if (!selectedFile && !populatedSections.length) {
-      setError("Choose a PDF/image or paste questions into at least one section first.");
+      setError("Choose a PDF/image or add at least one question first.");
       return;
     }
 
     setError("");
     setProcessingProgress(4);
     setProcessingStep("read");
-    setProcessingLabel("Reading document text");
+    setProcessingLabel("Reading your study material");
     navigate("processing");
 
     try {
       const parsedImports: ReturnType<typeof parseQuestionBankDetailed>[] = [];
       const sourceParts: string[] = [];
       const importedQuestions: Question[] = [];
-      let sourceName = populatedSections.length > 1 ? `${populatedSections.length} pasted sections` : "Pasted study material";
+      let sourceName = populatedSections.length > 1
+        ? `${populatedSections.length} manually added questions`
+        : "Manually added question";
 
       if (selectedFile) {
-        sourceName = selectedFile.name;
-        const isImageFile = selectedFile.type.startsWith("image/") || /\.(png|jpe?g|webp)$/i.test(selectedFile.name);
-        const extractedText = isImageFile
-          ? await extractImageText(selectedFile, ({ progress, stage, page, totalPages }) => {
-              setProcessingLabel(stage === "ocr" ? `OCR scanning image ${page} of ${totalPages}` : "Reading image text");
-              setProcessingProgress(Math.max(5, Math.min(52, Math.round(progress * 0.52))));
-            })
-          : await extractPdfText(selectedFile, ({ progress, stage, page, totalPages }) => {
-              setProcessingLabel(stage === "ocr" ? `OCR scanning page ${page} of ${totalPages}` : `Reading page ${page} of ${totalPages}`);
-              setProcessingProgress(Math.max(5, Math.min(52, Math.round(progress * 0.52))));
-            }, { enableOcr: ocrEnabled });
+        sourceName = populatedSections.length ? `${selectedFile.name} + ${populatedSections.length} manual question${populatedSections.length === 1 ? "" : "s"}` : selectedFile.name;
+        const extractedText = await extractPdfText(selectedFile, ({ progress, page, totalPages }) => {
+          setProcessingLabel(`Reading page ${page} of ${totalPages}`);
+          setProcessingProgress(Math.max(5, Math.min(52, Math.round(progress * 0.52))));
+        }, { enableOcr: false });
         if (extractedText.replace(/\s/g, "").length < 30) {
-          throw new Error("This file did not produce enough readable text. Turn on OCR or try a clearer scan.");
+          throw new Error("This PDF has little or no selectable text. Scanned-PDF OCR is not enabled yet, so try a text-based PDF or add the questions manually.");
         }
         sourceParts.push(extractedText);
         const parsedFile = parseQuestionBankDetailed(extractedText);
@@ -355,34 +426,65 @@ function App() {
       }
 
       setProcessingStep("detect");
-      setProcessingLabel("Detecting questions and choices");
+      setProcessingLabel("Preparing questions and answer choices");
       setProcessingProgress(58);
-      for (const section of populatedSections) {
-        const sectionText = combinePastedQuestionsAndAnswers(section.questions, section.answers);
-        sourceParts.push(sectionText);
-        const parsedSection = parseQuestionBankDetailed(sectionText);
-        const sectionQuestions = parsedSection.questions.map((question) => ({
-          ...question,
-          topic: section.title.trim() || question.topic
-        }));
-        parsedImports.push({ ...parsedSection, questions: sectionQuestions });
-        importedQuestions.push(...sectionQuestions);
-      }
+
+      const manualQuestions = populatedSections.map((section, sectionIndex) => {
+        const enteredAnswers = section.answers.filter((answer) => answer.text.trim());
+        const optionDrafts = enteredAnswers.length >= 2 ? enteredAnswers : section.answers.slice(0, Math.max(2, section.answers.length));
+        const options = optionDrafts.map((answer) => ({ id: uid(), text: answer.text.trim() }));
+        const correctOptionIds = options
+          .filter((_, optionIndex) => optionDrafts[optionIndex]?.correct)
+          .map((option) => option.id);
+        const topic = section.topic.trim() || section.title.trim() || "General";
+        const question: Question = {
+          id: uid(),
+          question: section.question.trim(),
+          options,
+          correctOptionId: correctOptionIds[0] ?? null,
+          correctOptionIds,
+          selectionMode: section.selectionMode === "multiple" || correctOptionIds.length > 1 ? "multiple" : "single",
+          explanation: "",
+          status: correctOptionIds.length ? "verified" : "review",
+          topic,
+          importWarnings: options.length < 2 ? ["Add at least two answer choices."] : undefined
+        };
+        const sourceLines = [
+          `${sectionIndex + 1}. ${section.question.trim()}`,
+          ...optionDrafts.map((answer, answerIndex) => `${String.fromCharCode(65 + answerIndex)}. ${answer.text.trim()}`),
+          correctOptionIds.length
+            ? `Answer: ${optionDrafts.map((answer, answerIndex) => answer.correct ? String.fromCharCode(65 + answerIndex) : "").filter(Boolean).join(", ")}`
+            : ""
+        ].filter(Boolean);
+        sourceParts.push(sourceLines.join("\n"));
+        return question;
+      });
+      importedQuestions.push(...manualQuestions);
 
       const sourceText = sourceParts.join("\n\n");
       let questions = ensureQuestionTopics(dedupeImportedQuestions(importedQuestions));
+      const aiWarnings: string[] = [];
 
       setProcessingStep("answers");
-      setProcessingLabel("Matching answers and checking structure");
+      setProcessingLabel(aiEnhanced ? "AI is reviewing the import" : "Matching answers and checking structure");
       setProcessingProgress(72);
+
       if (aiEnhanced) {
-        questions = ensureQuestionTopics(await generateWithAi(sourceText, studyTitle || stripExtension(sourceName)));
-      } else if (questions.length < 2) {
+        try {
+          const assisted = await assistImportWithAi(sourceText, questions, studyTitle || stripExtension(sourceName));
+          questions = ensureQuestionTopics(assisted.questions);
+          aiWarnings.push(...assisted.warnings);
+        } catch (aiError) {
+          const message = aiError instanceof Error ? aiError.message : "AI import assistance was unavailable.";
+          aiWarnings.push(`AI assistance could not complete: ${message} Local extraction was kept.`);
+          if (!questions.length && sourceText.trim()) questions = ensureQuestionTopics(generateLocalQuestions(sourceText));
+        }
+      } else if (!questions.length && sourceText.trim()) {
         questions = ensureQuestionTopics(generateLocalQuestions(sourceText));
       }
 
       if (!questions.length) {
-        throw new Error("No usable questions were found. Try a clearer question bank, paste content, or enable AI generation.");
+        throw new Error("No usable questions were found. Try a clearer question bank, add a manual question, or enable AI import assistance.");
       }
 
       setProcessingStep("finish");
@@ -390,17 +492,18 @@ function App() {
       setProcessingProgress(94);
       await delay(350);
 
-      const expected = parsedImports.reduce(
+      const parsedExpected = parsedImports.reduce(
         (sum, parsed) => sum + (parsed.detectedQuestionNumbers.length || parsed.highestQuestionNumber || parsed.questions.length),
         0
       );
-      const parserWarnings = [...new Set(parsedImports.flatMap((parsed) => parsed.warnings))];
-      const issues = validateQuestions(questions, aiEnhanced ? questions.length : expected || questions.length);
+      const expected = parsedExpected + manualQuestions.length;
+      const parserWarnings = [...new Set([...parsedImports.flatMap((parsed) => parsed.warnings), ...aiWarnings])];
+      const issues = validateQuestions(questions, expected || questions.length);
       setPendingImport({
         title: studyTitle.trim() || stripExtension(sourceName),
         sourceName,
         questions,
-        expected: aiEnhanced ? questions.length : expected || questions.length,
+        expected: expected || questions.length,
         parserWarnings,
         selectedIds: questions.map((question) => question.id),
         issues
@@ -478,13 +581,6 @@ function App() {
     setStudySets((current) => [set, ...current]);
     setActiveSetId(set.id);
     setEditingQuestionId(set.questions[0]?.id ?? null);
-    setImportSummary({
-      title: set.title,
-      extracted: questions.length,
-      expected: pendingImport.expected,
-      verified: questions.filter(isVerifiedQuestion).length,
-      warnings: pendingImport.issues.filter((issue) => issue.severity !== "info").slice(0, 3).map((issue) => issue.message)
-    });
     clearUploadDraft();
     setSelectedFile(null);
     setRecoveredFileName("");
@@ -495,32 +591,111 @@ function App() {
     navigate("editor");
   }
 
-  async function generateWithAi(text: string, title: string): Promise<Question[]> {
-    const response = await fetch("/api/generate", {
+  async function assistImportWithAi(sourceText: string, questions: Question[], title: string): Promise<{ questions: Question[]; warnings: string[] }> {
+    const response = await fetch("/api/ai-import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, title })
+      body: JSON.stringify({
+        title,
+        sourceText,
+        questions: questions.map((question) => ({
+          clientId: question.id,
+          question: question.question,
+          options: question.options.map((option) => option.text),
+          correctIndexes: getCorrectIds(question)
+            .map((id) => question.options.findIndex((option) => option.id === id))
+            .filter((index) => index >= 0),
+          selectionMode: isMultipleQuestion(question) ? "multiple" : "single",
+          explanation: question.explanation,
+          topic: question.topic ?? "General",
+          sourcePage: question.sourcePage ?? null,
+          importWarnings: question.importWarnings ?? []
+        }))
+      })
     });
+
     const payload = await response.json().catch(() => ({})) as {
       error?: string;
-      questions?: Array<{ question: string; options: string[]; correctIndex: number; explanation?: string }>;
+      questions?: Array<{
+        clientId: string;
+        question: string;
+        options: string[];
+        correctIndexes: number[];
+        selectionMode: "single" | "multiple";
+        explanation: string;
+        topic: string;
+        sourcePage: number | null;
+        confidence: number;
+        changed: boolean;
+        changes: string[];
+        reviewRequired: boolean;
+      }>;
+      warnings?: string[];
+      summary?: { reviewed: number; repaired: number; lowConfidence: number; generated: number };
     };
+
     if (!response.ok || !payload.questions) {
-      throw new Error(payload.error || "AI generation failed. Disable AI-enhanced generation and try local extraction.");
+      throw new Error(payload.error || "AI import assistance failed.");
     }
-    return payload.questions.map((question) => {
-      const options = question.options.map((text) => ({ id: uid(), text }));
+
+    const existingById = new Map(questions.map((question) => [question.id, question]));
+    const returnedIds = new Set<string>();
+    const repaired = payload.questions.map((item) => {
+      returnedIds.add(item.clientId);
+      const existing = existingById.get(item.clientId);
+      const optionTexts = Array.isArray(item.options) ? item.options.filter((text) => String(text).trim()).slice(0, 8) : [];
+      const options = optionTexts.map((text, index) => ({
+        id: existing?.options[index]?.id ?? uid(),
+        text: String(text).trim()
+      }));
+      const correctOptionIds = [...new Set((item.correctIndexes ?? [])
+        .filter((index) => Number.isInteger(index) && index >= 0 && index < options.length)
+        .map((index) => options[index].id))];
+      const confidence = Math.max(0, Math.min(1, Number(item.confidence) || 0));
+      const notes = Array.isArray(item.changes) ? item.changes.filter(Boolean).slice(0, 8) : [];
+      const reviewRequired = Boolean(item.reviewRequired) || confidence < 0.75 || correctOptionIds.length === 0;
       return {
-        id: uid(),
-        question: question.question,
-        options,
-        correctOptionId: options[question.correctIndex]?.id ?? null,
-        correctOptionIds: options[question.correctIndex] ? [options[question.correctIndex].id] : [],
-        selectionMode: "single",
-        explanation: question.explanation ?? "",
-        status: options[question.correctIndex] ? "verified" : "review"
-      };
+        id: existing?.id ?? uid(),
+        question: String(item.question || existing?.question || "Untitled question").trim(),
+        options: options.length >= 2 ? options : existing?.options ?? options,
+        correctOptionId: correctOptionIds[0] ?? null,
+        correctOptionIds,
+        selectionMode: item.selectionMode === "multiple" || correctOptionIds.length > 1 ? "multiple" as const : "single" as const,
+        explanation: String(item.explanation || existing?.explanation || "").trim(),
+        status: reviewRequired ? "review" as const : "verified" as const,
+        sourcePage: item.sourcePage ?? existing?.sourcePage,
+        topic: String(item.topic || existing?.topic || "General").trim() || "General",
+        importWarnings: [
+          ...(existing?.importWarnings ?? []),
+          ...notes,
+          ...(confidence < 0.75 ? [`AI confidence is ${Math.round(confidence * 100)}%; verify this question.`] : [])
+        ].filter(Boolean),
+        aiConfidence: confidence,
+        aiChanged: Boolean(item.changed),
+        aiNotes: notes
+      } satisfies Question;
     });
+
+    const missing = questions
+      .filter((question) => !returnedIds.has(question.id))
+      .map((question) => ({
+        ...question,
+        status: "review" as const,
+        importWarnings: [...(question.importWarnings ?? []), "AI did not return this question; local extraction was preserved for review."],
+        aiConfidence: 0,
+        aiChanged: false,
+        aiNotes: ["Local extraction preserved"]
+      }));
+
+    const summary = payload.summary;
+    const summaryNote = summary
+      ? `AI reviewed ${summary.reviewed}, repaired ${summary.repaired}, generated ${summary.generated}, and flagged ${summary.lowConfidence} low-confidence question${summary.lowConfidence === 1 ? "" : "s"}.`
+      : "AI import assistance completed.";
+
+    return {
+      questions: [...repaired, ...missing],
+      warnings: [summaryNote, ...(payload.warnings ?? [])]
+    };
   }
 
   function updateActiveSet(updater: (set: StudySet) => StudySet) {
@@ -737,7 +912,16 @@ function App() {
       flagged: {},
       currentIndex: 0,
       startedAt: Date.now(),
-      remainingSeconds: settings.timed ? settings.minutes * 60 : 0
+      remainingSeconds: settings.timed ? settings.minutes * 60 : 0,
+      lifelines: {
+        fiftyFiftyUsed: false,
+        audiencePollUsed: false,
+        timeFreezeUsed: false,
+        clueUsed: false,
+        removedOptionIds: {},
+        audiencePolls: {},
+        clues: {}
+      }
     };
     setExam(session);
     setResultDetails([]);
@@ -767,6 +951,147 @@ function App() {
   function moveQuestion(index: number) {
     if (!exam) return;
     setExam({ ...exam, currentIndex: Math.min(Math.max(index, 0), exam.questions.length - 1) });
+  }
+
+  function useFiftyFifty() {
+    if (!exam || !settings.lifelineFiftyFifty) return;
+    const question = exam.questions[exam.currentIndex];
+    const lifelines = exam.lifelines;
+    if (lifelines?.fiftyFiftyUsed) {
+      setToast("50:50 has already been used in this exam");
+      return;
+    }
+    if (isMultipleQuestion(question)) {
+      setToast("50:50 is available only for single-answer questions");
+      return;
+    }
+    const correctIds = new Set(getCorrectIds(question));
+    const selected = new Set(exam.responses[question.id] ?? []);
+    const wrong = question.options.filter((option) => !correctIds.has(option.id));
+    if (wrong.length <= 1) {
+      setToast("This question already has only two choices");
+      return;
+    }
+    const preferred = wrong.filter((option) => !selected.has(option.id));
+    const candidates = [...shuffle(preferred), ...shuffle(wrong.filter((option) => selected.has(option.id)))];
+    const removeCount = Math.max(1, question.options.length - 2);
+    const removed = candidates.slice(0, removeCount).map((option) => option.id);
+    setExam({
+      ...exam,
+      responses: { ...exam.responses, [question.id]: (exam.responses[question.id] ?? []).filter((id) => !removed.includes(id)) },
+      lifelines: {
+        fiftyFiftyUsed: true,
+        audiencePollUsed: lifelines?.audiencePollUsed ?? false,
+        timeFreezeUsed: lifelines?.timeFreezeUsed ?? false,
+        clueUsed: lifelines?.clueUsed ?? false,
+        removedOptionIds: { ...(lifelines?.removedOptionIds ?? {}), [question.id]: removed },
+        audiencePolls: lifelines?.audiencePolls ?? {},
+        clues: lifelines?.clues ?? {},
+        timerFrozenUntil: lifelines?.timerFrozenUntil
+      }
+    });
+    setToast("50:50 removed two incorrect choices");
+  }
+
+  function useAudiencePoll() {
+    if (!exam || !settings.lifelineAudiencePoll) return;
+    const question = exam.questions[exam.currentIndex];
+    const lifelines = exam.lifelines;
+    if (lifelines?.audiencePollUsed) {
+      setToast("Audience Poll has already been used in this exam");
+      return;
+    }
+    if (isMultipleQuestion(question)) {
+      setToast("Audience Poll is available only for single-answer questions");
+      return;
+    }
+    const removed = new Set(lifelines?.removedOptionIds?.[question.id] ?? []);
+    const visible = question.options.filter((option) => !removed.has(option.id));
+    const correctId = getCorrectIds(question)[0];
+    if (!correctId || visible.length < 2) return;
+    const correctPercent = visible.length === 2
+      ? 68 + Math.floor(Math.random() * 18)
+      : 52 + Math.floor(Math.random() * 24);
+    const wrong = visible.filter((option) => option.id !== correctId);
+    const remainder = 100 - correctPercent;
+    const weights = wrong.map(() => Math.random() + 0.25);
+    const weightTotal = weights.reduce((sum, value) => sum + value, 0);
+    const allocations = weights.map((weight) => Math.floor((weight / weightTotal) * remainder));
+    let unassigned = remainder - allocations.reduce((sum, value) => sum + value, 0);
+    for (let index = 0; unassigned > 0 && wrong.length > 0; index = (index + 1) % wrong.length) {
+      allocations[index] += 1;
+      unassigned -= 1;
+    }
+    const poll: Record<string, number> = { [correctId]: correctPercent };
+    wrong.forEach((option, index) => { poll[option.id] = allocations[index] ?? 0; });
+    setExam({
+      ...exam,
+      lifelines: {
+        fiftyFiftyUsed: lifelines?.fiftyFiftyUsed ?? false,
+        audiencePollUsed: true,
+        timeFreezeUsed: lifelines?.timeFreezeUsed ?? false,
+        clueUsed: lifelines?.clueUsed ?? false,
+        removedOptionIds: lifelines?.removedOptionIds ?? {},
+        audiencePolls: { ...(lifelines?.audiencePolls ?? {}), [question.id]: poll },
+        clues: lifelines?.clues ?? {},
+        timerFrozenUntil: lifelines?.timerFrozenUntil
+      }
+    });
+    setToast("The audience has voted");
+  }
+
+  function useTimeFreeze() {
+    if (!exam || !settings.lifelineTimeFreeze) return;
+    if (!settings.timed) {
+      setToast("Time Freeze is available only in timed exams");
+      return;
+    }
+    const lifelines = exam.lifelines;
+    if (lifelines?.timeFreezeUsed) {
+      setToast("Time Freeze has already been used in this exam");
+      return;
+    }
+    setExam({
+      ...exam,
+      lifelines: {
+        fiftyFiftyUsed: lifelines?.fiftyFiftyUsed ?? false,
+        audiencePollUsed: lifelines?.audiencePollUsed ?? false,
+        timeFreezeUsed: true,
+        clueUsed: lifelines?.clueUsed ?? false,
+        removedOptionIds: lifelines?.removedOptionIds ?? {},
+        audiencePolls: lifelines?.audiencePolls ?? {},
+        clues: lifelines?.clues ?? {},
+        timerFrozenUntil: Date.now() + 60_000
+      }
+    });
+    setToast("Timer frozen for 60 seconds");
+  }
+
+  function useClue() {
+    if (!exam || !settings.lifelineClue) return;
+    const question = exam.questions[exam.currentIndex];
+    const lifelines = exam.lifelines;
+    if (lifelines?.clueUsed) {
+      setToast("Clue has already been used in this exam");
+      return;
+    }
+    const clue = question.explanation.trim()
+      || [question.sourcePage ? `Review source page ${question.sourcePage}.` : "", question.topic ? `Focus on the ${question.topic} concept.` : ""].filter(Boolean).join(" ")
+      || "Compare each choice with the exact wording of the question and eliminate answers that introduce unrelated details.";
+    setExam({
+      ...exam,
+      lifelines: {
+        fiftyFiftyUsed: lifelines?.fiftyFiftyUsed ?? false,
+        audiencePollUsed: lifelines?.audiencePollUsed ?? false,
+        timeFreezeUsed: lifelines?.timeFreezeUsed ?? false,
+        clueUsed: true,
+        removedOptionIds: lifelines?.removedOptionIds ?? {},
+        audiencePolls: lifelines?.audiencePolls ?? {},
+        clues: { ...(lifelines?.clues ?? {}), [question.id]: clue },
+        timerFrozenUntil: lifelines?.timerFrozenUntil
+      }
+    });
+    setToast("Clue revealed");
   }
 
   function requestExamSubmit() {
@@ -828,6 +1153,10 @@ function App() {
           reviewOpen={submitReviewOpen}
           onCloseReview={() => setSubmitReviewOpen(false)}
           onConfirmSubmit={() => finalizeExam(false)}
+          onFiftyFifty={useFiftyFifty}
+          onAudiencePoll={useAudiencePoll}
+          onTimeFreeze={useTimeFreeze}
+          onClue={useClue}
         />
       ) : view === "results" ? (
         <ResultsView
@@ -878,7 +1207,6 @@ function App() {
               dragging={dragging}
               aiEnhanced={aiEnhanced}
               aiConfigured={aiConfigured}
-              ocrEnabled={ocrEnabled}
               recoveredFileName={recoveredFileName}
               error={error}
               fileInputRef={fileInputRef}
@@ -889,7 +1217,6 @@ function App() {
               onTitle={setStudyTitle}
               onDragging={setDragging}
               onAi={setAiEnhanced}
-              onOcr={setOcrEnabled}
               onClearDraft={clearStudyDraft}
               onCreate={createStudySet}
               onCancel={() => navigate("dashboard")}
@@ -897,9 +1224,9 @@ function App() {
           )}
           {view === "processing" && (
             <ProcessingView
-              fileName={selectedFile?.name || (pasteSections.filter((section) => section.questions.trim()).length > 1
-                ? `${pasteSections.filter((section) => section.questions.trim()).length} pasted sections`
-                : pasteSections.find((section) => section.questions.trim())?.title || "Pasted study material")}
+              fileName={selectedFile?.name || (pasteSections.filter((section) => section.question.trim()).length > 1
+                ? `${pasteSections.filter((section) => section.question.trim()).length} manual questions`
+                : pasteSections.find((section) => section.question.trim())?.title || "Manually added question")}
               progress={processingProgress}
               step={processingStep}
               activeLabel={processingLabel}
@@ -950,36 +1277,6 @@ function App() {
         </Shell>
       )}
       {toast && <div className="toast" role="status"><span className="toast-icon"><Check size={15} /></span><span>{toast}</span><i /></div>}
-      {importSummary && <ImportSummaryModal summary={importSummary} onClose={() => setImportSummary(null)} />}
-    </div>
-  );
-}
-
-function ImportSummaryModal({ summary, onClose }: { summary: ImportSummary; onClose: () => void }) {
-  const complete = summary.expected === summary.extracted && summary.warnings.length === 0;
-  return (
-    <div className="modal-backdrop" role="presentation">
-      <section className="import-modal" role="dialog" aria-modal="true" aria-labelledby="import-title">
-        <div className={`modal-success-orb ${complete ? "complete" : "warning"}`}>
-          {complete ? <Check size={29} /> : <CircleHelp size={29} />}
-          <span className="orb-ring" />
-        </div>
-        <button className="modal-close" type="button" aria-label="Close import summary" onClick={onClose}><X size={18} /></button>
-        <p className="eyebrow">PDF IMPORT COMPLETE</p>
-        <h2 id="import-title">{complete ? "Everything lined up." : "Import finished with notes."}</h2>
-        <p className="modal-copy">“{summary.title}” is ready for review. QuizForge compared the extracted items with the numbering found in the PDF.</p>
-        <div className="import-stats">
-          <div><strong>{summary.extracted}</strong><small>Questions extracted</small></div>
-          <div><strong>{summary.expected}</strong><small>Numbered in PDF</small></div>
-          <div><strong>{summary.verified}</strong><small>Answers detected</small></div>
-        </div>
-        {summary.warnings.length > 0 && (
-          <div className="modal-warning-list">
-            {summary.warnings.slice(0, 3).map((warning) => <p key={warning}><CircleHelp size={14} /> {warning}</p>)}
-          </div>
-        )}
-        <button className="primary-button modal-primary" type="button" onClick={onClose}>Review questions <ChevronRight size={16} /></button>
-      </section>
     </div>
   );
 }
@@ -997,15 +1294,15 @@ interface ShellProps {
 
 function Shell({ view, theme, sidebarOpen, children, onToggleSidebar, onNavigate, onTheme, onNew }: ShellProps) {
   const nav = [
-    { id: "dashboard" as View, label: "Dashboard", icon: Home },
-    { id: "library" as View, label: "Study sets", icon: Library },
+    { id: "dashboard" as View, label: "Home", icon: Home },
+    { id: "library" as View, label: "Library", icon: Library },
     { id: "performance" as View, label: "Performance", icon: BarChart3 }
   ];
   return (
     <div className="app-shell">
       <button className="mobile-menu" type="button" aria-label="Toggle navigation" onClick={onToggleSidebar}><Menu size={20} /></button>
       {sidebarOpen && <button className="sidebar-scrim" type="button" aria-label="Close navigation" onClick={onToggleSidebar} />}
-      <aside className={`sidebar ${sidebarOpen ? "open" : ""}`}>
+      <aside className={`sidebar streamlined-sidebar ${sidebarOpen ? "open" : ""}`}>
         <button className="brand" type="button" onClick={() => onNavigate("dashboard")}>
           <span className="brand-mark">Q</span>
           <span><strong>QuizForge</strong><small>Study smarter</small></span>
@@ -1013,37 +1310,24 @@ function Shell({ view, theme, sidebarOpen, children, onToggleSidebar, onNavigate
         <nav className="side-nav" aria-label="Main navigation">
           {nav.map((item) => {
             const Icon = item.icon;
-            return (
-              <button key={item.id} type="button" className={`nav-item ${view === item.id ? "active" : ""}`} onClick={() => onNavigate(item.id)}>
-                <Icon size={18} /><span>{item.label}</span>
-              </button>
-            );
+            return <button key={item.id} type="button" className={`nav-item ${view === item.id ? "active" : ""}`} onClick={() => onNavigate(item.id)}><Icon size={18} /><span>{item.label}</span></button>;
           })}
         </nav>
-        <div className="sidebar-card">
-          <Sparkles size={18} />
-          <strong>AI study mode</strong>
-          <p>Generate questions from notes when your server API key is configured.</p>
-          <button type="button" onClick={onNew}>Try it</button>
-        </div>
-        <div className="profile">
-          <span className="avatar">D</span>
-          <span><strong>Daniel</strong><small>Local workspace</small></span>
-        </div>
+        <button className="primary-button sidebar-create-button" type="button" onClick={onNew}><Plus size={17} /> Create study set</button>
+        <div className="sidebar-spacer" />
+        <p className="local-workspace-note"><CheckCircle2 size={15} /> Saved locally in this browser</p>
       </aside>
       <main className="main-content">
-        <header className="global-topbar">
+        <header className="global-topbar simplified-topbar">
           <div className="mobile-brand"><span className="brand-mark">Q</span><strong>QuizForge</strong></div>
-          <div className="global-actions">
-            <button className="icon-button" type="button" aria-label="Toggle theme" onClick={onTheme}>{theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}</button>
-            <button className="primary-button compact" type="button" onClick={onNew}><Plus size={17} /> New study set</button>
-          </div>
+          <div className="global-actions"><button className="icon-button" type="button" aria-label="Toggle theme" onClick={onTheme}>{theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}</button></div>
         </header>
         <div key={view} className="view-transition">{children}</div>
       </main>
     </div>
   );
 }
+
 
 interface DashboardProps {
   studySets: StudySet[];
@@ -1062,27 +1346,22 @@ function Dashboard({ studySets, attempts, averageScore, onNew, onOpen, onNavigat
   return (
     <div className="page-wrap dashboard-page">
       <section className="welcome-row">
-        <div><p className="eyebrow">YOUR PERSONAL EXAM BUILDER</p><h1>Welcome back, Daniel</h1><p>Create a new test or continue one of your saved study sets.</p></div>
+        <div><p className="eyebrow">QUIZFORGE</p><h1>Build your next practice exam</h1><p>Import a PDF, add questions manually, and study with a focused mock-exam experience.</p></div>
       </section>
       {recoveryAvailable && <section className="recovery-banner"><span className="recovery-icon"><ArchiveRestore size={20} /></span><div><strong>Unfinished exam recovered</strong><p>Your answers, timer, flags, and current question were saved automatically.</p></div><button className="primary-button compact" type="button" onClick={onResumeExam}>Resume exam <ChevronRight size={15} /></button></section>}
-      <section className="hero-card">
+      <section className="hero-card streamlined-hero">
         <div className="hero-copy">
-          <span className="pill"><Sparkles size={14} /> AI-POWERED STUDY</span>
-          <h2>Turn any PDF into a <em>practice exam.</em></h2>
-          <p>Upload a reviewer, lecture notes, or a question bank. QuizForge extracts questions, identifies available answers, and builds a customizable mock test.</p>
-          <div className="hero-actions">
-            <button className="primary-button large" type="button" onClick={onNew}><Upload size={18} /> Upload PDF <ChevronRight size={17} /></button>
-            <button className="secondary-button large" type="button" onClick={onNew}><FileText size={18} /> Paste text</button>
-          </div>
-          <div className="privacy-line"><Check size={15} /> PDF extraction happens in your browser</div>
+          <span className="pill"><FileText size={14} /> SMART PDF IMPORT</span>
+          <h2>From study material to a <em>practice exam.</em></h2>
+          <p>Review detected questions before saving, edit anything that needs attention, and create randomized tests when you are ready.</p>
+          <div className="hero-actions"><button className="primary-button large" type="button" onClick={onNew}><Plus size={18} /> Create study set <ChevronRight size={17} /></button></div>
+          <div className="privacy-line"><Check size={15} /> Text-based PDF extraction happens in your browser</div>
         </div>
         <div className="upload-visual" aria-hidden="true">
-          <div className="upload-orbit orbit-one" />
-          <div className="upload-orbit orbit-two" />
+          <div className="upload-orbit orbit-one" /><div className="upload-orbit orbit-two" />
           <div className="file-card rear"><span>PDF</span><i /><i /><i /></div>
-          <div className="file-card front"><div className="file-icon">PDF</div><strong>Reviewer.pdf</strong><small>Ready to transform</small><div className="mini-progress"><span /></div></div>
-          <div className="floating-chip chip-one">24 questions</div>
-          <div className="floating-chip chip-two">Answer key found <Check size={12} /></div>
+          <div className="file-card front"><div className="file-icon">PDF</div><strong>Reviewer.pdf</strong><small>Ready to review</small><div className="mini-progress"><span /></div></div>
+          <div className="floating-chip chip-one">Questions detected</div><div className="floating-chip chip-two">Answer key matched <Check size={12} /></div>
         </div>
       </section>
       <section className="metric-grid" aria-label="Study overview">
@@ -1091,17 +1370,12 @@ function Dashboard({ studySets, attempts, averageScore, onNew, onOpen, onNavigat
         <Metric label="Attempts" value={attempts} note="Completed exams" icon={<Clock3 size={18} />} />
         <Metric label="Average" value={attempts ? `${averageScore}%` : "—"} note="All attempts" icon={<BarChart3 size={18} />} />
       </section>
-      <section className="section-heading">
-        <div><p className="eyebrow">YOUR LIBRARY</p><h3>Continue studying</h3></div>
-        <button className="text-button" type="button" onClick={() => onNavigate("library")}>View all <ChevronRight size={15} /></button>
-      </section>
-      <section className="study-grid">
-        {recent.map((set, index) => <StudyCard key={set.id} studySet={set} index={index} onOpen={onOpen} />)}
-        <button className="new-card" type="button" onClick={onNew}><span className="new-icon"><Plus size={22} /></span><strong>Create a study set</strong><p>Upload a PDF, paste notes, or begin with your own questions.</p></button>
-      </section>
+      <section className="section-heading"><div><p className="eyebrow">YOUR LIBRARY</p><h3>{studySets.length ? "Continue studying" : "Start your first study set"}</h3></div>{studySets.length > 3 && <button className="text-button" type="button" onClick={() => onNavigate("library")}>View all <ChevronRight size={15} /></button>}</section>
+      {studySets.length ? <section className="study-grid">{recent.map((set, index) => <StudyCard key={set.id} studySet={set} index={index} onOpen={onOpen} />)}<button className="new-card" type="button" onClick={onNew}><span className="new-icon"><Plus size={22} /></span><strong>Create a study set</strong><p>Import a PDF or add your own questions.</p></button></section> : <section className="empty-library-hero"><span><BookOpen size={28} /></span><h3>No study sets yet</h3><p>Create one from a text-based PDF or build the questions manually.</p><button className="primary-button" type="button" onClick={onNew}><Plus size={17} /> Create study set</button></section>}
     </div>
   );
 }
+
 
 function Metric({ label, value, note, icon }: { label: string; value: string | number; note: string; icon: React.ReactNode }) {
   return <article className="metric-card"><div className="metric-icon">{icon}</div><div><small>{label}</small><strong>{value}</strong><span>{note}</span></div></article>;
@@ -1193,7 +1467,6 @@ interface UploadProps {
   dragging: boolean;
   aiEnhanced: boolean;
   aiConfigured: boolean;
-  ocrEnabled: boolean;
   recoveredFileName?: string;
   error: string;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
@@ -1204,7 +1477,6 @@ interface UploadProps {
   onTitle: (title: string) => void;
   onDragging: (dragging: boolean) => void;
   onAi: (enabled: boolean) => void;
-  onOcr: (enabled: boolean) => void;
   onClearDraft: () => void;
   onCreate: () => void;
   onCancel: () => void;
@@ -1217,7 +1489,6 @@ function UploadView({
   dragging,
   aiEnhanced,
   aiConfigured,
-  ocrEnabled,
   recoveredFileName,
   error,
   fileInputRef,
@@ -1228,191 +1499,187 @@ function UploadView({
   onTitle,
   onDragging,
   onAi,
-  onOcr,
   onClearDraft,
   onCreate,
   onCancel
 }: UploadProps) {
   function acceptFile(candidate?: File) {
     if (!candidate) return;
-    const supported = candidate.type === "application/pdf" || candidate.type.startsWith("image/") || /\.(pdf|png|jpe?g|webp)$/i.test(candidate.name);
+    const supported = candidate.type === "application/pdf" || /\.pdf$/i.test(candidate.name);
     if (!supported) return;
     onFile(candidate);
     if (!title.trim()) onTitle(stripExtension(candidate.name));
   }
 
-  const completedSections = pasteSections.filter((section) => section.questions.trim().length >= 10).length;
+  function updateAnswer(section: PasteSection, answerId: string, patch: Partial<PasteAnswerDraft>) {
+    onUpdatePasteSection(section.id, {
+      answers: section.answers.map((answer) => answer.id === answerId ? { ...answer, ...patch } : answer)
+    });
+  }
+
+  function toggleCorrect(section: PasteSection, answerId: string) {
+    const target = section.answers.find((answer) => answer.id === answerId);
+    if (!target) return;
+    onUpdatePasteSection(section.id, {
+      answers: section.answers.map((answer) => {
+        if (section.selectionMode === "multiple") return answer.id === answerId ? { ...answer, correct: !answer.correct } : answer;
+        return { ...answer, correct: answer.id === answerId ? !target.correct : false };
+      })
+    });
+  }
+
+  function setSelectionMode(section: PasteSection, selectionMode: "single" | "multiple") {
+    const firstCorrect = section.answers.find((answer) => answer.correct)?.id;
+    onUpdatePasteSection(section.id, {
+      selectionMode,
+      answers: selectionMode === "single"
+        ? section.answers.map((answer) => ({ ...answer, correct: answer.id === firstCorrect }))
+        : section.answers
+    });
+  }
+
+  function addAnswer(section: PasteSection) {
+    onUpdatePasteSection(section.id, { activeTab: "answers", expanded: true, answers: [...section.answers, createPasteAnswer()] });
+  }
+
+  function removeAnswer(section: PasteSection, answerId: string) {
+    if (section.answers.length <= 2) return;
+    onUpdatePasteSection(section.id, { answers: section.answers.filter((answer) => answer.id !== answerId) });
+  }
+
+  const completedSections = pasteSections.filter((section) => section.question.trim().length >= 3).length;
+  const expandedCount = pasteSections.filter((section) => section.expanded).length;
 
   return (
-    <div className="page-wrap upload-page">
+    <div className="page-wrap upload-page streamlined-builder-page">
       <div className="page-head">
         <div>
-          <p className="eyebrow">NEW STUDY SET</p>
-          <h1>Create from your material</h1>
-          <p>Upload a PDF, paste questions and answers separately, or combine both sources.</p>
+          <p className="eyebrow">CREATE STUDY SET</p>
+          <h1>Import a PDF or build it manually</h1>
+          <p>Use a text-based PDF, or add questions one by one in the manual builder.</p>
         </div>
         <button className="ghost-button" type="button" onClick={onCancel}>Cancel</button>
       </div>
-      {recoveredFileName && !file && <div className="recovery-note"><ArchiveRestore size={18} /><span><strong>Draft restored.</strong> Paste content was recovered. For security, browsers cannot restore the previously selected file, so reselect “{recoveredFileName}” if needed.</span></div>}
+
+      {recoveredFileName && !file && <div className="recovery-note"><ArchiveRestore size={18} /><span><strong>Draft restored.</strong> Your manual questions were recovered. Reselect “{recoveredFileName}” only if you still want to import that PDF.</span></div>}
       {error && <div className="error-banner"><X size={18} /><span>{error}</span></div>}
-      <section className="upload-layout">
-        <div className="upload-form-panel">
-          <label className="field-label" htmlFor="set-title">Study set title</label>
-          <input id="set-title" className="text-input" value={title} onChange={(event) => onTitle(event.target.value)} placeholder="Example: Biology Midterm Reviewer" />
 
-          <div
-            className={`drop-zone ${dragging ? "dragging" : ""}`}
-            onDragOver={(event) => { event.preventDefault(); onDragging(true); }}
-            onDragLeave={() => onDragging(false)}
-            onDrop={(event) => { event.preventDefault(); onDragging(false); acceptFile(event.dataTransfer.files?.[0]); }}
-          >
-            <input ref={fileInputRef} type="file" accept="application/pdf,.pdf,image/png,image/jpeg,image/webp" onChange={(event) => acceptFile(event.target.files?.[0])} />
-            <div className="big-upload"><Upload size={28} /></div>
-            <h3>{file ? "Your file is ready" : "Drop a PDF or image here"}</h3>
-            <p>Text PDFs are fastest. Scanned PDFs, screenshots, and photos can be read with OCR.</p>
-            {file && (
-              <div className="file-selected">
-                <span className="pdf">{file.type.startsWith("image/") ? "IMG" : "PDF"}</span>
-                <span><strong>{file.name}</strong><small>{Math.max(0.1, file.size / 1024 / 1024).toFixed(1)} MB · Ready to analyze</small></span>
-                <button type="button" aria-label="Remove PDF" onClick={() => onFile(null)}><X size={16} /></button>
-              </div>
-            )}
-            <button className="secondary-button" type="button" onClick={() => fileInputRef.current?.click()}>{file ? "Choose another file" : "Browse files"}</button>
+      <section className="streamlined-create-panel">
+        <label className="field-label" htmlFor="set-title">Study set title</label>
+        <input id="set-title" className="text-input set-title-input" value={title} onChange={(event) => onTitle(event.target.value)} placeholder="Example: Biology Midterm Reviewer" />
+
+        <div
+          className={`drop-zone compact-drop-zone ${dragging ? "dragging" : ""}`}
+          onDragOver={(event) => { event.preventDefault(); onDragging(true); }}
+          onDragLeave={() => onDragging(false)}
+          onDrop={(event) => { event.preventDefault(); onDragging(false); acceptFile(event.dataTransfer.files?.[0]); }}
+        >
+          <input ref={fileInputRef} type="file" accept="application/pdf,.pdf" onChange={(event) => acceptFile(event.target.files?.[0])} />
+          <div className="drop-zone-copy">
+            <span className="big-upload"><Upload size={24} /></span>
+            <span><strong>{file ? file.name : "Drop a text-based PDF here"}</strong><small>{file ? `${Math.max(0.1, file.size / 1024 / 1024).toFixed(1)} MB · ready to import` : "or browse your computer"}</small></span>
           </div>
-
-          <div className="or-divider"><span>or build from pasted content</span></div>
-
-          <div className="paste-builder-heading">
-            <div>
-              <p className="eyebrow">PASTE BUILDER</p>
-              <h2>Questions and answers, kept separate.</h2>
-              <p>Each section can hold one chapter, reviewer, or batch of questions. Add as many as you need.</p>
-            </div>
-            <button className="secondary-button add-section-top" type="button" onClick={onAddPasteSection}><Plus size={17} /> Add section</button>
+          <div className="drop-zone-actions">
+            {file && <button className="icon-button" type="button" aria-label="Remove PDF" onClick={() => onFile(null)}><X size={16} /></button>}
+            <button className="secondary-button compact" type="button" onClick={() => fileInputRef.current?.click()}>{file ? "Replace" : "Browse PDF"}</button>
           </div>
-
-          <div className="paste-section-list">
-            {pasteSections.map((section, index) => (
-              <article className="paste-section-card" key={section.id}>
-                <div className="paste-section-head">
-                  <div className="section-number"><span>{String(index + 1).padStart(2, "0")}</span></div>
-                  <div>
-                    <strong>Paste section {index + 1}</strong>
-                    <small>{section.questions.trim() ? "Content added" : "Waiting for questions"}</small>
-                  </div>
-                  <button
-                    className="remove-section-button"
-                    type="button"
-                    aria-label={`Remove paste section ${index + 1}`}
-                    onClick={() => onRemovePasteSection(section.id)}
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-
-                <label className="field-label" htmlFor={`section-title-${section.id}`}>Section title <span>optional</span></label>
-                <input
-                  id={`section-title-${section.id}`}
-                  className="text-input"
-                  value={section.title}
-                  onChange={(event) => onUpdatePasteSection(section.id, { title: event.target.value })}
-                  placeholder="Example: Chapter 1 — Platform Basics"
-                />
-
-                <div className="paste-columns">
-                  <label className="paste-column" htmlFor={`questions-${section.id}`}>
-                    <span className="paste-column-title"><CircleHelp size={17} /><span><strong>Questions</strong><small>Include the choices under every question.</small></span></span>
-                    <textarea
-                      id={`questions-${section.id}`}
-                      className="paste-input paste-questions"
-                      value={section.questions}
-                      onChange={(event) => onUpdatePasteSection(section.id, { questions: event.target.value })}
-                      placeholder={`1. What is the capital of Japan?
-A. Seoul
-B. Tokyo
-C. Beijing
-D. Bangkok
-
-2. Which...
-A. ...
-B. ...
-C. ...
-D. ...`}
-                    />
-                  </label>
-
-                  <label className="paste-column" htmlFor={`answers-${section.id}`}>
-                    <span className="paste-column-title answer-title"><Check size={17} /><span><strong>Answers</strong><small>Numbered or one answer per line both work.</small></span></span>
-                    <textarea
-                      id={`answers-${section.id}`}
-                      className="paste-input paste-answers"
-                      value={section.answers}
-                      onChange={(event) => onUpdatePasteSection(section.id, { answers: event.target.value })}
-                      placeholder={`1. B
-2. D
-3. A, C
-
-Or simply:
-B
-D
-A, C`}
-                    />
-                  </label>
-                </div>
-
-                <div className="paste-format-hints">
-                  <span><Check size={13} /> A–D choices supported</span>
-                  <span><Check size={13} /> Choose-two/three supported</span>
-                  <span><Check size={13} /> Answer-only lines auto-numbered</span>
-                </div>
-              </article>
-            ))}
-          </div>
-
-          <button className="add-paste-section-button" type="button" onClick={onAddPasteSection}>
-            <span><Plus size={20} /></span>
-            <strong>Add another paste section</strong>
-            <small>Create another Questions + Answers pair</small>
-          </button>
-
-          <label className="switch-row">
-            <span><ScanText size={19} /><span><strong>OCR for scans and photos</strong><small>Automatically reads pages with little or no selectable text. OCR is slower and requires an internet connection to load the OCR engine.</small></span></span>
-            <input type="checkbox" checked={ocrEnabled} onChange={(event) => onOcr(event.target.checked)} />
-          </label>
-          <label className={`switch-row ${!aiConfigured ? "disabled" : ""}`}>
-            <span><WandSparkles size={19} /><span><strong>AI-enhanced generation</strong><small>{aiConfigured ? "Generate stronger questions from ordinary notes." : "Add OPENAI_API_KEY to .env to enable this option."}</small></span></span>
-            <input type="checkbox" checked={aiEnhanced} disabled={!aiConfigured} onChange={(event) => onAi(event.target.checked)} />
-          </label>
-          <button className="primary-button create-button" type="button" onClick={onCreate}>
-            <Sparkles size={18} /> Create study set <span className="create-count">{file ? "PDF" : completedSections || 0}{file && completedSections ? ` + ${completedSections} section${completedSections === 1 ? "" : "s"}` : ""}</span><ChevronRight size={17} />
-          </button>
-          <p className="privacy-note"><Check size={14} /> Local mode keeps document text in your browser. AI mode sends extracted text to your configured server API.</p>
         </div>
-        <aside className="upload-side">
-          <p className="eyebrow">WHAT HAPPENS NEXT</p>
-          <h2>Paste in batches without mixing your answers into the questions.</h2>
-          <p>QuizForge parses every section independently, then combines them into one editable study set.</p>
-          <div className="feature-list">
-            <Feature number="01" icon={<Image size={18} />} title="Upload or scan" text="Use text PDFs, scanned PDFs, screenshots, or photos." />
-            <Feature number="02" icon={<Check size={18} />} title="Add answer key" text="Paste answers separately, even one letter per line." />
-            <Feature number="03" icon={<Plus size={18} />} title="Add more sections" text="Keep chapters and question batches organized." />
-            <Feature number="04" icon={<BarChart3 size={18} />} title="Review and practice" text="Verify, shuffle, time, submit, and score." />
+        <p className="scan-coming-soon"><AlertTriangle size={14} /> Scanned-image PDF OCR is temporarily unavailable. Text-based PDFs work normally.</p>
+
+        <div className="or-divider"><span>or build questions manually</span></div>
+
+        <div className="manual-builder-heading simplified-heading">
+          <div>
+            <p className="eyebrow">MANUAL BUILDER</p>
+            <h2>Questions stay compact until you open them.</h2>
+            <p>Only one question opens at a time, so long reviewers remain easy to scan.</p>
           </div>
-        </aside>
+          {expandedCount > 0 && <button className="text-button" type="button" onClick={() => pasteSections.forEach((section) => onUpdatePasteSection(section.id, { expanded: false }))}>Collapse all</button>}
+        </div>
+
+        <div className="manual-question-list accordion-list">
+          {pasteSections.map((section, index) => {
+            const answerCount = section.answers.filter((answer) => answer.text.trim()).length;
+            const correctCount = section.answers.filter((answer) => answer.correct).length;
+            const complete = Boolean(section.question.trim().length >= 3 && answerCount >= 2 && correctCount > 0);
+            const summary = section.question.trim() || "Untitled question";
+            return (
+              <article className={`manual-question-card accordion-card ${section.expanded ? "expanded" : "collapsed"}`} key={section.id}>
+                <div className="manual-question-head accordion-head">
+                  <button className="manual-question-toggle" type="button" onClick={() => onUpdatePasteSection(section.id, { expanded: !section.expanded })} aria-expanded={section.expanded}>
+                    <span className="manual-question-number">{index + 1}</span>
+                    <span className="manual-question-summary">
+                      <strong>Question {index + 1}</strong>
+                      <b>{summary}</b>
+                      <small>{answerCount} choice{answerCount === 1 ? "" : "s"} · {correctCount ? `${correctCount} correct` : "correct answer not selected"}</small>
+                    </span>
+                    <span className={`question-completion ${complete ? "complete" : "needs"}`}>{complete ? <CheckCircle2 size={15} /> : <CircleHelp size={15} />}{complete ? "Complete" : "Needs attention"}</span>
+                    <ChevronRight className={`accordion-chevron ${section.expanded ? "open" : ""}`} size={18} />
+                  </button>
+                  <button className="remove-section-button" type="button" aria-label={`Remove question ${index + 1}`} onClick={() => onRemovePasteSection(section.id)}><Trash2 size={17} /></button>
+                </div>
+
+                {section.expanded && (
+                  <div className="accordion-content">
+                    <div className="manual-question-tabs" role="tablist" aria-label={`Question ${index + 1} editor tabs`}>
+                      <button type="button" role="tab" aria-selected={section.activeTab === "question"} className={section.activeTab === "question" ? "active" : ""} onClick={() => onUpdatePasteSection(section.id, { activeTab: "question", expanded: true })}><CircleHelp size={17} /> Question</button>
+                      <button type="button" role="tab" aria-selected={section.activeTab === "answers"} className={section.activeTab === "answers" ? "active" : ""} onClick={() => onUpdatePasteSection(section.id, { activeTab: "answers", expanded: true })}><CheckCircle2 size={17} /> Answers <span>{section.answers.length}</span></button>
+                    </div>
+
+                    {section.activeTab === "question" ? (
+                      <div className="manual-tab-panel question-tab-panel" role="tabpanel">
+                        <label className="field-label" htmlFor={`manual-question-${section.id}`}>Question text</label>
+                        <textarea id={`manual-question-${section.id}`} className="manual-question-input" value={section.question} onChange={(event) => onUpdatePasteSection(section.id, { question: event.target.value })} placeholder="Example: What is the capital of Japan?" />
+                        <label className="single-meta-field"><span>Topic</span><input className="text-input" value={section.topic} onChange={(event) => onUpdatePasteSection(section.id, { topic: event.target.value })} placeholder="General" /></label>
+                        <div className="manual-panel-footer"><span>Saved automatically in this browser.</span><button className="primary-button compact" type="button" onClick={() => onUpdatePasteSection(section.id, { activeTab: "answers", expanded: true })}>Continue to answers <ChevronRight size={16} /></button></div>
+                      </div>
+                    ) : (
+                      <div className="manual-tab-panel answers-tab-panel" role="tabpanel">
+                        <div className="manual-answers-toolbar">
+                          <div><strong>Answer choices</strong><small>Choose whether one or several answers are correct.</small></div>
+                          <div className="manual-mode-toggle" aria-label="Correct-answer mode"><button type="button" className={section.selectionMode === "single" ? "active" : ""} onClick={() => setSelectionMode(section, "single")}>Single correct</button><button type="button" className={section.selectionMode === "multiple" ? "active" : ""} onClick={() => setSelectionMode(section, "multiple")}>Multiple correct</button></div>
+                        </div>
+                        <div className="manual-answer-list">
+                          {section.answers.map((answer, answerIndex) => (
+                            <div className={`manual-answer-row ${answer.correct ? "correct" : ""}`} key={answer.id}>
+                              <span className="manual-answer-letter">{String.fromCharCode(65 + answerIndex)}</span>
+                              <input value={answer.text} onChange={(event) => updateAnswer(section, answer.id, { text: event.target.value })} placeholder={`Answer choice ${String.fromCharCode(65 + answerIndex)}`} aria-label={`Question ${index + 1} answer ${String.fromCharCode(65 + answerIndex)}`} />
+                              <button className={`manual-correct-button ${answer.correct ? "selected" : ""}`} type="button" onClick={() => toggleCorrect(section, answer.id)} aria-label={answer.correct ? "Unmark correct answer" : "Mark correct answer"}><Check size={17} /><span>{answer.correct ? "Correct" : "Mark correct"}</span></button>
+                              <button className="manual-remove-answer" type="button" disabled={section.answers.length <= 2} onClick={() => removeAnswer(section, answer.id)} aria-label={`Remove answer ${String.fromCharCode(65 + answerIndex)}`}><X size={16} /></button>
+                            </div>
+                          ))}
+                        </div>
+                        <button className="add-answer-button" type="button" onClick={() => addAnswer(section)}><Plus size={17} /> Add answer choice</button>
+                        <div className="manual-panel-footer"><button className="text-button" type="button" onClick={() => onUpdatePasteSection(section.id, { activeTab: "question", expanded: true })}><ChevronLeft size={15} /> Back to question</button><button className="secondary-button compact" type="button" onClick={() => onUpdatePasteSection(section.id, { expanded: false })}>Done with question {index + 1}</button></div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </article>
+            );
+          })}
+        </div>
+
+        <button className="add-paste-section-button add-manual-question-button" type="button" onClick={onAddPasteSection}><span><Plus size={20} /></span><strong>Add question</strong><small>The current question collapses and the new question opens automatically</small></button>
+
+        {aiConfigured && <label className="switch-row ai-import-switch"><span><Bot size={19} /><span><strong>AI import assistance</strong><small>Review the local extraction, repair clear formatting problems, add confidence notes, and flag uncertain answers before saving.</small></span></span><input type="checkbox" checked={aiEnhanced} onChange={(event) => onAi(event.target.checked)} /></label>}
+
+        <div className="create-builder-footer">
+          <div><strong>{file ? "PDF ready" : `${completedSections} manual question${completedSections === 1 ? "" : "s"}`}</strong><small>{aiEnhanced ? "AI assistance is enabled; extracted text will be sent securely to your server-side AI endpoint." : "Your document and draft stay local in this browser."}</small></div>
+          <button className="primary-button create-button" type="button" onClick={onCreate}><Sparkles size={18} /> Review study set <ChevronRight size={17} /></button>
+        </div>
+        {(title.trim() || completedSections || file) && <button className="text-button clear-draft-button" type="button" onClick={onClearDraft}>Clear saved draft</button>}
       </section>
     </div>
   );
 }
 
-function Feature({ number, icon, title, text }: { number: string; icon: React.ReactNode; title: string; text: string }) {
-  return <div className="feature-row"><span className="feature-number">{number}</span><span className="feature-icon">{icon}</span><div><strong>{title}</strong><small>{text}</small></div></div>;
-}
 
 function ProcessingView({ fileName, progress, step, activeLabel }: { fileName: string; progress: number; step: ProcessingStep; activeLabel: string }) {
   const steps: Array<{ id: ProcessingStep; label: string }> = [
     { id: "read", label: activeLabel },
     { id: "detect", label: "Detecting questions and choices" },
-    { id: "answers", label: "Matching correct answers" },
+    { id: "answers", label: activeLabel },
     { id: "finish", label: "Preparing the review screen" }
   ];
   const currentIndex = steps.findIndex((item) => item.id === step);
@@ -1449,7 +1716,7 @@ interface ImportPreviewProps {
 }
 
 function ImportPreviewView({ pending, onToggle, onSelectMode, onUpdateQuestion, onUpdateAnswer, onBack, onConfirm }: ImportPreviewProps) {
-  const [filter, setFilter] = useState<"all" | "issues" | "missing">("all");
+  const [filter, setFilter] = useState<"issues" | "missing" | "all">(() => pending.issues.some((issue) => issue.questionId) ? "issues" : "all");
   const [query, setQuery] = useState("");
   const issuesByQuestion = useMemo(() => {
     const map = new Map<string, ValidationIssue[]>();
@@ -1462,75 +1729,87 @@ function ImportPreviewView({ pending, onToggle, onSelectMode, onUpdateQuestion, 
   const errorCount = pending.issues.filter((issue) => issue.severity === "error").length;
   const warningCount = pending.issues.filter((issue) => issue.severity === "warning").length;
   const verifiedCount = pending.questions.filter(isVerifiedQuestion).length;
-  const filtered = pending.questions.filter((question) => {
-    const issues = issuesByQuestion.get(question.id) ?? [];
-    const matchesFilter = filter === "all" || (filter === "issues" && issues.length > 0) || (filter === "missing" && !isVerifiedQuestion(question));
-    const haystack = `${question.question} ${question.topic ?? ""}`.toLowerCase();
-    return matchesFilter && haystack.includes(query.toLowerCase());
-  });
   const selected = new Set(pending.selectedIds);
+  const matchesSearch = (question: Question) => `${question.question} ${question.topic ?? ""}`.toLowerCase().includes(query.toLowerCase());
+  const attentionQuestions = pending.questions.filter((question) => (issuesByQuestion.get(question.id)?.length ?? 0) > 0 && matchesSearch(question));
+  const cleanQuestions = pending.questions.filter((question) => !(issuesByQuestion.get(question.id)?.length ?? 0) && matchesSearch(question));
+  const missingQuestions = pending.questions.filter((question) => !isVerifiedQuestion(question) && matchesSearch(question));
+
+  function renderQuestionCard(question: Question) {
+    const questionIssues = issuesByQuestion.get(question.id) ?? [];
+    const included = selected.has(question.id);
+    const correctIds = getCorrectIds(question);
+    const questionNumber = pending.questions.indexOf(question) + 1;
+    return (
+      <article className={`import-question-card ${included ? "included" : "excluded"}`} key={question.id}>
+        <div className="import-question-top">
+          <label className="include-check"><input type="checkbox" checked={included} onChange={() => onToggle(question.id)} /><span>Include</span></label>
+          <span className="question-index">Question {questionNumber}</span>
+          <input className="topic-input" value={question.topic ?? "General"} onChange={(event) => onUpdateQuestion(question.id, { topic: event.target.value })} aria-label={`Topic for question ${questionNumber}`} />
+          <span className={`status ${isVerifiedQuestion(question) ? "ready" : "draft"}`}>{isVerifiedQuestion(question) ? "Answer ready" : "Needs answer"}</span>
+        </div>
+        <textarea className="import-question-text" value={question.question} onChange={(event) => onUpdateQuestion(question.id, { question: event.target.value })} />
+        {question.aiConfidence !== undefined && (
+          <div className={`ai-review-strip ${question.aiConfidence >= 0.85 ? "high" : question.aiConfidence >= 0.75 ? "medium" : "low"}`}>
+            <Bot size={16} />
+            <span><strong>AI reviewed · {Math.round(question.aiConfidence * 100)}% confidence</strong><small>{question.aiChanged ? (question.aiNotes?.[0] ?? "Formatting or answer structure was repaired.") : "No clear repair was needed."}</small></span>
+            {question.aiChanged && <span className="ai-repaired-badge"><WandSparkles size={13} /> Repaired</span>}
+          </div>
+        )}
+        <div className="import-option-grid">
+          {question.options.map((option, optionIndex) => {
+            const correct = correctIds.includes(option.id);
+            return <button type="button" className={`import-option ${correct ? "correct" : ""}`} key={option.id} onClick={() => onUpdateAnswer(question.id, option.id)}><span>{String.fromCharCode(65 + optionIndex)}</span><b>{option.text}</b>{correct && <Check size={15} />}</button>;
+          })}
+        </div>
+        {questionIssues.length > 0 ? <div className="question-issue-list">{questionIssues.map((issue) => <div className={`question-issue ${issue.severity}`} key={issue.id}>{issue.severity === "error" ? <CircleHelp size={14} /> : <AlertTriangle size={14} />}<span><strong>{issue.title}</strong>{issue.message}</span></div>)}</div> : <div className="question-clean"><CheckCircle2 size={15} /> Structure looks good</div>}
+      </article>
+    );
+  }
 
   return (
-    <div className="page-wrap import-preview-page">
+    <div className="page-wrap import-preview-page streamlined-import-preview">
       <div className="page-head">
-        <div><p className="eyebrow">IMPORT PREVIEW</p><h1>Check the import before saving</h1><p>QuizForge validates question structure, answer keys, duplicates, and suspicious choices before anything enters your library.</p></div>
-        <div className="toolbar"><button className="ghost-button" type="button" onClick={onBack}><ChevronLeft size={16} /> Back</button><button className="primary-button" type="button" onClick={onConfirm}>Add {pending.selectedIds.length} questions <ChevronRight size={16} /></button></div>
+        <div><p className="eyebrow">IMPORT REVIEW</p><h1>Fix only what needs attention</h1><p>Problem questions appear first. Clean questions stay collapsed until you need them.</p></div>
+        <div className="toolbar"><button className="ghost-button" type="button" onClick={onBack}><ChevronLeft size={16} /> Back</button><button className="primary-button" type="button" onClick={onConfirm}>Save {pending.selectedIds.length} questions <ChevronRight size={16} /></button></div>
       </div>
 
-      <section className="import-overview-grid">
+      <section className="import-overview-grid compact-overview">
         <Metric label="Prepared" value={pending.questions.length} note={`${pending.expected} detected in source`} icon={<Layers3 size={18} />} />
         <Metric label="Answers found" value={verifiedCount} note={`${pending.questions.length - verifiedCount} need an answer`} icon={<CheckCircle2 size={18} />} />
         <Metric label="Warnings" value={warningCount} note="Review recommended" icon={<AlertTriangle size={18} />} />
-        <Metric label="Blocking issues" value={errorCount} note="Fix or exclude" icon={<CircleHelp size={18} />} />
+        <Metric label="Blocking" value={errorCount} note="Fix or exclude" icon={<CircleHelp size={18} />} />
       </section>
 
-      {(pending.parserWarnings.length > 0 || pending.issues.some((issue) => !issue.questionId)) && (
-        <section className="import-global-notes">
-          <AlertTriangle size={19} />
-          <div><strong>Source-level notes</strong>{[...pending.parserWarnings, ...pending.issues.filter((issue) => !issue.questionId).map((issue) => issue.message)].slice(0, 4).map((message) => <p key={message}>{message}</p>)}</div>
-        </section>
-      )}
+      {(pending.parserWarnings.length > 0 || pending.issues.some((issue) => !issue.questionId)) && <section className="import-global-notes"><AlertTriangle size={19} /><div><strong>Source-level notes</strong>{[...pending.parserWarnings, ...pending.issues.filter((issue) => !issue.questionId).map((issue) => issue.message)].slice(0, 4).map((message) => <p key={message}>{message}</p>)}</div></section>}
 
-      <section className="import-toolbar card-surface">
+      <section className="import-toolbar card-surface simplified-import-toolbar">
         <label className="search-box import-search"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search questions or topics" /></label>
         <div className="segmented-control" aria-label="Import filters">
+          <button type="button" className={filter === "issues" ? "active" : ""} onClick={() => setFilter("issues")}>Needs attention <span>{attentionQuestions.length}</span></button>
+          <button type="button" className={filter === "missing" ? "active" : ""} onClick={() => setFilter("missing")}>Missing answers <span>{missingQuestions.length}</span></button>
           <button type="button" className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>All</button>
-          <button type="button" className={filter === "issues" ? "active" : ""} onClick={() => setFilter("issues")}>Has issues</button>
-          <button type="button" className={filter === "missing" ? "active" : ""} onClick={() => setFilter("missing")}>Missing answers</button>
         </div>
-        <div className="toolbar import-select-actions"><button className="text-button" type="button" onClick={() => onSelectMode("all")}>Select all</button><button className="text-button" type="button" onClick={() => onSelectMode("clean")}>Select clean only</button><button className="text-button" type="button" onClick={() => onSelectMode("none")}>Clear</button></div>
+        <div className="toolbar import-select-actions"><button className="text-button" type="button" onClick={() => onSelectMode("all")}>Select all</button><button className="text-button" type="button" onClick={() => onSelectMode("clean")}>Select clean</button><button className="text-button" type="button" onClick={() => onSelectMode("none")}>Clear</button></div>
       </section>
 
       <section className="import-question-list">
-        {filtered.map((question, index) => {
-          const questionIssues = issuesByQuestion.get(question.id) ?? [];
-          const included = selected.has(question.id);
-          const correctIds = getCorrectIds(question);
-          return (
-            <article className={`import-question-card ${included ? "included" : "excluded"}`} key={question.id}>
-              <div className="import-question-top">
-                <label className="include-check"><input type="checkbox" checked={included} onChange={() => onToggle(question.id)} /><span>Include</span></label>
-                <span className="question-index">Question {pending.questions.indexOf(question) + 1}</span>
-                <input className="topic-input" value={question.topic ?? "General"} onChange={(event) => onUpdateQuestion(question.id, { topic: event.target.value })} aria-label={`Topic for question ${index + 1}`} />
-                <span className={`status ${isVerifiedQuestion(question) ? "ready" : "draft"}`}>{isVerifiedQuestion(question) ? "Answer ready" : "Needs answer"}</span>
-              </div>
-              <textarea className="import-question-text" value={question.question} onChange={(event) => onUpdateQuestion(question.id, { question: event.target.value })} />
-              <div className="import-option-grid">
-                {question.options.map((option, optionIndex) => {
-                  const correct = correctIds.includes(option.id);
-                  return <button type="button" className={`import-option ${correct ? "correct" : ""}`} key={option.id} onClick={() => onUpdateAnswer(question.id, option.id)}><span>{String.fromCharCode(65 + optionIndex)}</span><b>{option.text}</b>{correct && <Check size={15} />}</button>;
-                })}
-              </div>
-              {questionIssues.length > 0 ? <div className="question-issue-list">{questionIssues.map((issue) => <div className={`question-issue ${issue.severity}`} key={issue.id}>{issue.severity === "error" ? <CircleHelp size={14} /> : <AlertTriangle size={14} />}<span><strong>{issue.title}</strong>{issue.message}</span></div>)}</div> : <div className="question-clean"><CheckCircle2 size={15} /> Structure looks good</div>}
-            </article>
-          );
-        })}
-        {!filtered.length && <div className="empty-state"><Filter size={34} /><strong>No questions match this filter</strong><p>Try a different filter or search term.</p></div>}
+        {filter === "issues" && attentionQuestions.map(renderQuestionCard)}
+        {filter === "missing" && missingQuestions.map(renderQuestionCard)}
+        {filter === "all" && attentionQuestions.map(renderQuestionCard)}
+        {filter === "all" && cleanQuestions.length > 0 && (
+          <details className="clean-question-disclosure">
+            <summary><span><CheckCircle2 size={18} /><strong>View {cleanQuestions.length} clean question{cleanQuestions.length === 1 ? "" : "s"}</strong><small>These questions passed the structural checks.</small></span><ChevronRight size={18} /></summary>
+            <div className="clean-question-content">{cleanQuestions.map(renderQuestionCard)}</div>
+          </details>
+        )}
+        {((filter === "issues" && !attentionQuestions.length) || (filter === "missing" && !missingQuestions.length) || (filter === "all" && !attentionQuestions.length && !cleanQuestions.length)) && <div className="empty-state"><CheckCircle2 size={34} /><strong>No questions match this view</strong><p>Try another filter or search term.</p></div>}
       </section>
-      <div className="sticky-import-footer"><span><strong>{pending.selectedIds.length}</strong> of {pending.questions.length} questions selected</span><button className="primary-button" type="button" onClick={onConfirm}>Save to library <ChevronRight size={16} /></button></div>
+      <div className="sticky-import-footer"><span><strong>{pending.selectedIds.length}</strong> of {pending.questions.length} selected</span><button className="primary-button" type="button" onClick={onConfirm}>Save to library <ChevronRight size={16} /></button></div>
     </div>
   );
 }
+
 
 interface EditorProps {
   studySet: StudySet;
@@ -1612,7 +1891,6 @@ function EditorView({ studySet, question, onSelect, onUpdateQuestion, onUpdateOp
         <section className="bulk-action-bar">
           <div><span className="bulk-count">{selectedIds.length}</span><strong>questions selected</strong><button className="text-button" type="button" onClick={clearSelection}>Clear</button></div>
           <div className="bulk-actions">
-            <button className="secondary-button compact" type="button" onClick={() => onBulkStatus(selectedIds, "verified")}><CheckCircle2 size={15} /> Check answers</button>
             <button className="secondary-button compact" type="button" onClick={() => onBulkStatus(selectedIds, "review")}><CircleHelp size={15} /> Mark review</button>
             <label className="bulk-topic-control"><Tag size={15} /><input value={bulkTopic} onChange={(event) => setBulkTopic(event.target.value)} placeholder="Topic" /><button type="button" onClick={() => onBulkTopic(selectedIds, bulkTopic.trim() || "General")}>Apply</button></label>
             <button className="ghost-button danger-ghost compact" type="button" onClick={() => { onBulkDelete(selectedIds); clearSelection(); }}><Trash2 size={15} /> Delete</button>
@@ -1626,14 +1904,10 @@ function EditorView({ studySet, question, onSelect, onUpdateQuestion, onUpdateOp
           <div className="question-list filtered-list">
             {filteredQuestions.map((item) => {
               const itemIndex = studySet.questions.indexOf(item);
-              const itemCorrectIds = getCorrectIds(item);
               return (
                 <div className={`question-list-row ${item.id === question.id ? "active" : ""} ${item.status === "review" ? "warn" : ""}`} key={item.id}>
                   <label className="question-select"><input type="checkbox" checked={selectedSet.has(item.id)} onChange={() => toggleSelected(item.id)} aria-label={`Select question ${itemIndex + 1}`} /></label>
                   <button className="question-open" type="button" onClick={() => onSelect(item.id)}><span>{itemIndex + 1}</span><span className="question-list-copy"><b>{item.question}</b><small>{item.topic ?? "General"}</small></span>{isVerifiedQuestion(item) ? <Check size={14} /> : <CircleHelp size={14} />}</button>
-                  <div className="quick-answer-key" aria-label={`Quick answer key for question ${itemIndex + 1}`}>
-                    {item.options.map((option, optionIndex) => <button key={option.id} type="button" className={itemCorrectIds.includes(option.id) ? "selected" : ""} onClick={() => onMarkCorrect(item.id, option.id)}>{String.fromCharCode(65 + optionIndex)}</button>)}
-                  </div>
                 </div>
               );
             })}
@@ -1649,7 +1923,7 @@ function EditorView({ studySet, question, onSelect, onUpdateQuestion, onUpdateOp
           <div className="form-group"><div className="label-row answer-heading"><div><label>Answer choices</label><small>{multiple ? "Check all correct answers." : "Choose one correct answer."}</small></div><select className="answer-mode-select" aria-label="Answer selection mode" value={multiple ? "multiple" : "single"} onChange={(event) => onSelectionMode(question.id, event.target.value as "single" | "multiple")}><option value="single">Single answer</option><option value="multiple">Multiple answers</option></select></div><div className="answer-grid">
             {question.options.map((option, optionIndex) => {
               const selected = correctIds.includes(option.id);
-              return <div className={`answer-row ${selected ? "correct" : ""}`} key={option.id}><GripVertical className="drag-handle" size={17} /><span className="answer-letter">{String.fromCharCode(65 + optionIndex)}</span><input value={option.text} onChange={(event) => onUpdateOption(question.id, option.id, event.target.value)} aria-label={`Answer ${String.fromCharCode(65 + optionIndex)}`} /><button className={`correct-radio ${selected ? "selected" : ""}`} type="button" title={selected ? "Correct answer selected" : "Mark as correct"} onClick={() => onMarkCorrect(question.id, option.id)}><Check size={16} /></button><button className="remove-option" type="button" title="Remove option" onClick={() => onRemoveOption(question.id, option.id)}><X size={15} /></button></div>;
+              return <div className={`answer-row ${selected ? "correct" : ""}`} key={option.id}><span className="answer-letter">{String.fromCharCode(65 + optionIndex)}</span><input value={option.text} onChange={(event) => onUpdateOption(question.id, option.id, event.target.value)} aria-label={`Answer ${String.fromCharCode(65 + optionIndex)}`} /><button className={`correct-radio ${selected ? "selected" : ""}`} type="button" title={selected ? "Correct answer selected" : "Mark as correct"} onClick={() => onMarkCorrect(question.id, option.id)}><Check size={16} /></button><button className="remove-option" type="button" title="Remove option" onClick={() => onRemoveOption(question.id, option.id)}><X size={15} /></button></div>;
             })}
           </div><button className="text-button add-option" type="button" onClick={() => onAddOption(question.id)}><Plus size={15} /> Add answer choice</button></div>
           <div className="form-group"><label htmlFor="explanation">Explanation</label><textarea id="explanation" className="explanation-input" value={question.explanation} onChange={(event) => onUpdateQuestion(question.id, { explanation: event.target.value })} placeholder="Explain why the selected answer is correct." /></div>
@@ -1664,6 +1938,7 @@ function SetupView({ studySet, settings, onSettings, onBack, onStart }: { studyS
   const verified = studySet.questions.filter(isVerifiedQuestion);
   const topics = availableTopics(verified);
   const weak = weakTopics(studySet.attempts);
+  const hasExplanations = verified.some((question) => question.explanation.trim().length > 0);
   const filtered = verified.filter((question) => {
     const topicMatch = !settings.topicFilter || settings.topicFilter === "All topics" || (question.topic ?? "General") === settings.topicFilter;
     const weakMatch = !settings.weakAreasOnly || weak.length === 0 || weak.includes(question.topic ?? "General");
@@ -1685,7 +1960,16 @@ function SetupView({ studySet, settings, onSettings, onBack, onStart }: { studyS
           <ToggleSetting label="Shuffle answer choices" description="Randomize the choice order without changing the answer key." checked={settings.shuffleAnswers} onChange={(value) => update("shuffleAnswers", value)} />
           <ToggleSetting label="Timed exam" description="Show a countdown while answering." checked={settings.timed} onChange={(value) => update("timed", value)} />
           <div className={`setting-row ${!settings.timed ? "disabled-setting" : ""}`}><div className="setting-copy"><strong>Time limit</strong><small>Select the exam duration.</small></div><select disabled={!settings.timed} value={settings.minutes} onChange={(event) => update("minutes", Number(event.target.value))}>{[5, 10, 20, 30, 45, 60, 90].map((value) => <option value={value} key={value}>{value} minutes</option>)}</select></div>
-          <ToggleSetting label="Show explanations" description="Display explanations in the answer review." checked={settings.showExplanations} onChange={(value) => update("showExplanations", value)} />
+          {hasExplanations && <ToggleSetting label="Show explanations" description="Display available explanations in the answer review." checked={settings.showExplanations} onChange={(value) => update("showExplanations", value)} />}
+          <section className="lifeline-settings">
+            <div className="lifeline-settings-head"><span><ShieldCheck size={18} /></span><div><strong>Practice lifelines</strong><small>Turn each aid on or off for this attempt. Every enabled lifeline can be used once.</small></div></div>
+            <div className="lifeline-toggle-grid">
+              <LifelineToggle icon={<Scissors size={17} />} label="50:50" description="Remove incorrect choices until two remain." checked={Boolean(settings.lifelineFiftyFifty)} onChange={(value) => update("lifelineFiftyFifty", value)} />
+              <LifelineToggle icon={<Users size={17} />} label="Audience Poll" description="Show a simulated vote for the current question." checked={Boolean(settings.lifelineAudiencePoll)} onChange={(value) => update("lifelineAudiencePoll", value)} />
+              <LifelineToggle icon={<Snowflake size={17} />} label="Time Freeze" description="Pause a timed exam for 60 seconds." checked={Boolean(settings.lifelineTimeFreeze)} onChange={(value) => update("lifelineTimeFreeze", value)} disabled={!settings.timed} />
+              <LifelineToggle icon={<Lightbulb size={17} />} label="Clue" description="Reveal the saved explanation or a source-page hint." checked={Boolean(settings.lifelineClue)} onChange={(value) => update("lifelineClue", value)} />
+            </div>
+          </section>
         </section>
         <aside className="preview-panel"><div className="preview-header"><span className="pill"><Target size={13} /> EXAM PREVIEW</span><h2>{studySet.title}</h2><p>{settings.weakAreasOnly && weak.length ? `Weak-area mode: ${weak.join(", ")}` : settings.topicFilter && settings.topicFilter !== "All topics" ? settings.topicFilter : "Mixed-topic practice"}</p></div>{preview && <div className="exam-preview-card"><span>{isMultipleQuestion(preview) ? "MULTIPLE ANSWERS" : "QUESTION 01"}</span><h3>{preview.question}</h3>{preview.options.slice(0, 3).map((option, index) => <div className="mini-answer" key={option.id}><span>{String.fromCharCode(65 + index)}</span>{option.text}</div>)}</div>}<div className="exam-details"><div><strong>{Math.min(settings.questionCount, filtered.length)}</strong><small>Questions</small></div><div><strong>{settings.timed ? `${settings.minutes}m` : "∞"}</strong><small>Time limit</small></div><div><strong>{filtered.length ? new Set(filtered.map((q) => q.topic ?? "General")).size : 0}</strong><small>Topics</small></div></div><button className="primary-button start-button" type="button" disabled={!filtered.length} onClick={onStart}>Start mock exam <ChevronRight size={17} /></button></aside>
       </div>
@@ -1697,12 +1981,59 @@ function ToggleSetting({ label, description, checked, onChange }: { label: strin
   return <label className="setting-row"><div className="setting-copy"><strong>{label}</strong><small>{description}</small></div><input className="switch-input" type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /></label>;
 }
 
+function LifelineToggle({ icon, label, description, checked, onChange, disabled = false }: { icon: React.ReactNode; label: string; description: string; checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean }) {
+  return <label className={`lifeline-toggle-card ${checked ? "enabled" : ""} ${disabled ? "disabled" : ""}`}><span className="lifeline-toggle-icon">{icon}</span><span className="lifeline-toggle-copy"><strong>{label}</strong><small>{description}</small></span><input className="switch-input" type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} /></label>;
+}
 
-function ExamView({ exam, settings, onAnswer, onFlag, onMove, onSubmit, reviewOpen, onCloseReview, onConfirmSubmit }: { exam: ExamSession | null; settings: ExamSettings; onAnswer: (id: string) => void; onFlag: () => void; onMove: (index: number) => void; onSubmit: () => void; reviewOpen: boolean; onCloseReview: () => void; onConfirmSubmit: () => void }) {
-  const [navFilter, setNavFilter] = useState<"all" | "unanswered" | "answered" | "flagged" | "incomplete">("all");
+
+function ExamView({
+  exam,
+  settings,
+  onAnswer,
+  onFlag,
+  onMove,
+  onSubmit,
+  reviewOpen,
+  onCloseReview,
+  onConfirmSubmit,
+  onFiftyFifty,
+  onAudiencePoll,
+  onTimeFreeze,
+  onClue
+}: {
+  exam: ExamSession | null;
+  settings: ExamSettings;
+  onAnswer: (id: string) => void;
+  onFlag: () => void;
+  onMove: (index: number) => void;
+  onSubmit: () => void;
+  reviewOpen: boolean;
+  onCloseReview: () => void;
+  onConfirmSubmit: () => void;
+  onFiftyFifty: () => void;
+  onAudiencePoll: () => void;
+  onTimeFreeze: () => void;
+  onClue: () => void;
+}) {
+  const [navFilter, setNavFilter] = useState<"all" | "unanswered" | "flagged" | "incomplete">("all");
+  const [navOpen, setNavOpen] = useState(false);
   if (!exam) return null;
   const question = exam.questions[exam.currentIndex];
   const selected = exam.responses[question.id] ?? [];
+  const lifelines = exam.lifelines ?? {
+    fiftyFiftyUsed: false,
+    audiencePollUsed: false,
+    timeFreezeUsed: false,
+    clueUsed: false,
+    removedOptionIds: {},
+    audiencePolls: {},
+    clues: {}
+  };
+  const removedIds = new Set(lifelines.removedOptionIds?.[question.id] ?? []);
+  const audiencePoll = lifelines.audiencePolls?.[question.id];
+  const clue = lifelines.clues?.[question.id];
+  const freezeSeconds = Math.max(0, Math.ceil(((lifelines.timerFrozenUntil ?? 0) - Date.now()) / 1000));
+  const hasMultipleQuestions = exam.questions.some(isMultipleQuestion);
   const statusFor = (item: ExamQuestion) => {
     const responses = exam.responses[item.id] ?? [];
     const expected = isMultipleQuestion(item) ? Math.max(2, getCorrectIds(item).length) : 1;
@@ -1717,34 +2048,96 @@ function ExamView({ exam, settings, onAnswer, onFlag, onMove, onSubmit, reviewOp
     if (status.flagged) acc.flagged += 1;
     return acc;
   }, { unanswered: 0, incomplete: 0, answered: 0, flagged: 0 });
-  const visibleQuestions = exam.questions.map((item, index) => ({ item, index, status: statusFor(item) })).filter(({ status }) => navFilter === "all" || status[navFilter]);
+  const visibleQuestions = exam.questions
+    .map((item, index) => ({ item, index, status: statusFor(item) }))
+    .filter(({ status }) => navFilter === "all" || status[navFilter]);
   const multiple = isMultipleQuestion(question);
   const expectedSelections = Math.max(2, getCorrectIds(question).length);
+  const progressPercent = Math.round((counts.answered / Math.max(1, exam.questions.length)) * 100);
+  const lifelinesEnabled = Boolean(
+    settings.lifelineFiftyFifty
+    || settings.lifelineAudiencePoll
+    || settings.lifelineTimeFreeze
+    || settings.lifelineClue
+  );
+
+  function moveFromNavigator(index: number) {
+    onMove(index);
+    setNavOpen(false);
+  }
+
   return (
-    <div className="exam-shell">
-      <header className="exam-topbar"><div className="exam-brand"><span className="brand-mark">Q</span><span><strong>QuizForge Exam</strong><small>{question.topic ?? "Practice mode"}</small></span></div><div className="exam-meta"><div className="autosave-status"><CheckCircle2 size={15} /><span>Saved</span></div><div className="timer"><Clock3 size={17} /><span>{settings.timed ? formatDuration(exam.remainingSeconds) : "Untimed"}</span><small>{settings.timed ? "remaining" : "no limit"}</small></div><button className="primary-button compact" type="button" onClick={onSubmit}>Review & submit</button></div></header>
+    <div className="exam-shell streamlined-exam-shell">
+      <header className="exam-topbar">
+        <div className="exam-brand"><span className="brand-mark">Q</span><span><strong>QuizForge Exam</strong><small>{question.topic ?? "Practice mode"}</small></span></div>
+        <button className="exam-nav-trigger" type="button" onClick={() => setNavOpen(true)}><Menu size={17} /> Questions</button>
+        <div className="exam-meta">
+          <div className="autosave-status"><CheckCircle2 size={15} /><span>Saved</span></div>
+          <div className={`timer ${freezeSeconds > 0 ? "frozen" : ""}`}><Clock3 size={17} /><span>{settings.timed ? formatDuration(exam.remainingSeconds) : "Untimed"}</span><small>{freezeSeconds > 0 ? `frozen ${freezeSeconds}s` : settings.timed ? "remaining" : "no limit"}</small></div>
+          <button className="primary-button compact" type="button" onClick={onSubmit}>Review & submit</button>
+        </div>
+      </header>
+      {navOpen && <button className="exam-nav-scrim" type="button" aria-label="Close question navigator" onClick={() => setNavOpen(false)} />}
       <div className="exam-body">
-        <aside className="exam-nav"><h2>Question navigator</h2><p>{counts.answered} complete · {counts.unanswered} unanswered</p>
-          <div className="exam-nav-filters">
+        <aside className={`exam-nav simplified-exam-nav ${navOpen ? "open" : ""}`}>
+          <div className="exam-nav-heading"><div><h2>Questions</h2><p>{counts.answered} of {exam.questions.length} complete</p></div><button className="icon-button exam-nav-close" type="button" aria-label="Close navigator" onClick={() => setNavOpen(false)}><X size={17} /></button></div>
+          <div className="exam-nav-progress"><div><strong>{progressPercent}%</strong><small>progress</small></div><span><i style={{ width: `${progressPercent}%` }} /></span></div>
+          <div className="exam-nav-filters compact-filters">
             <button type="button" className={navFilter === "all" ? "active" : ""} onClick={() => setNavFilter("all")}>All <span>{exam.questions.length}</span></button>
             <button type="button" className={navFilter === "unanswered" ? "active" : ""} onClick={() => setNavFilter("unanswered")}>Unanswered <span>{counts.unanswered}</span></button>
-            <button type="button" className={navFilter === "incomplete" ? "active" : ""} onClick={() => setNavFilter("incomplete")}>Incomplete <span>{counts.incomplete}</span></button>
+            {hasMultipleQuestions && <button type="button" className={navFilter === "incomplete" ? "active" : ""} onClick={() => setNavFilter("incomplete")}>Incomplete <span>{counts.incomplete}</span></button>}
             <button type="button" className={navFilter === "flagged" ? "active" : ""} onClick={() => setNavFilter("flagged")}>Flagged <span>{counts.flagged}</span></button>
-            <button type="button" className={navFilter === "answered" ? "active" : ""} onClick={() => setNavFilter("answered")}>Complete <span>{counts.answered}</span></button>
           </div>
-          <div className="question-dots">{visibleQuestions.map(({ item, index, status }) => <button key={item.id} type="button" className={`question-dot ${index === exam.currentIndex ? "current" : status.answered ? "answered" : ""} ${status.incomplete ? "incomplete" : ""} ${status.flagged ? "flagged" : ""}`} onClick={() => onMove(index)}>{index + 1}</button>)}</div>
+          <div className="question-dots">{visibleQuestions.map(({ item, index, status }) => <button key={item.id} type="button" aria-label={`Go to question ${index + 1}`} className={`question-dot ${index === exam.currentIndex ? "current" : status.answered ? "answered" : ""} ${status.incomplete ? "incomplete" : ""} ${status.flagged ? "flagged" : ""}`} onClick={() => moveFromNavigator(index)}>{index + 1}</button>)}</div>
           {!visibleQuestions.length && <div className="nav-empty">No questions in this filter.</div>}
-          <div className="exam-legend"><span><i className="legend-current" /> Current</span><span><i className="legend-answered" /> Complete</span><span><i className="legend-incomplete" /> Incomplete</span><span><i className="legend-flagged" /> Flagged</span><span><i /> Unanswered</span></div>
         </aside>
-        <main className="exam-main"><div className="exam-progress"><span>Question {exam.currentIndex + 1} of {exam.questions.length}</span><span>{Math.round(((exam.currentIndex + 1) / exam.questions.length) * 100)}%</span></div><div className="exam-progress-track"><span style={{ width: `${((exam.currentIndex + 1) / exam.questions.length) * 100}%` }} /></div><section className="exam-question-card" key={question.id}><div className="question-kicker"><span>{multiple ? "MULTIPLE ANSWERS" : "MULTIPLE CHOICE"} · {question.topic ?? "General"}</span><button className={`flag-button ${exam.flagged[question.id] ? "flagged" : ""}`} type="button" onClick={onFlag}><Flag size={15} /> {exam.flagged[question.id] ? "Flagged" : "Flag for review"}</button></div><h1>{question.question}</h1>{multiple && <div className="selection-hint"><Sparkles size={15} /><span>Select all correct answers{getCorrectIds(question).length > 1 ? ` (${expectedSelections} expected)` : ""}.</span></div>}<div className="exam-options">{question.options.map((option, index) => {
-          const isSelected = selected.includes(option.id);
-          return <button className={`exam-option ${isSelected ? "selected" : ""}`} key={option.id} type="button" onClick={() => onAnswer(option.id)}><span className="option-letter">{String.fromCharCode(65 + index)}</span><span>{option.text}</span>{isSelected && <span className="option-check"><Check size={18} /></span>}</button>;
-        })}</div><div className="exam-footer"><button className="ghost-button" type="button" disabled={exam.currentIndex === 0} onClick={() => onMove(exam.currentIndex - 1)}><ChevronLeft size={16} /> Previous</button>{exam.currentIndex < exam.questions.length - 1 ? <button className="primary-button" type="button" onClick={() => onMove(exam.currentIndex + 1)}>Next question <ChevronRight size={16} /></button> : <button className="primary-button" type="button" onClick={onSubmit}>Review exam <Check size={16} /></button>}</div></section></main>
+
+        <main className="exam-main">
+          <div className="exam-progress"><span>Question {exam.currentIndex + 1} of {exam.questions.length}</span><span>{Math.round(((exam.currentIndex + 1) / exam.questions.length) * 100)}%</span></div>
+          <div className="exam-progress-track"><span style={{ width: `${((exam.currentIndex + 1) / exam.questions.length) * 100}%` }} /></div>
+          <section className="exam-question-card" key={question.id}>
+            <div className="question-kicker"><span>{multiple ? "MULTIPLE ANSWERS" : "MULTIPLE CHOICE"} · {question.topic ?? "General"}</span><button className={`flag-button ${exam.flagged[question.id] ? "flagged" : ""}`} type="button" onClick={onFlag}><Flag size={15} /> {exam.flagged[question.id] ? "Flagged" : "Flag for review"}</button></div>
+            <h1>{question.question}</h1>
+
+            {lifelinesEnabled && (
+              <section className="lifeline-bar" aria-label="Exam lifelines">
+                <div className="lifeline-bar-title"><ShieldCheck size={16} /><span><strong>Lifelines</strong><small>Each can be used once</small></span></div>
+                <div className="lifeline-actions">
+                  {settings.lifelineFiftyFifty && <button className={`lifeline-button ${lifelines.fiftyFiftyUsed ? "used" : ""}`} type="button" disabled={lifelines.fiftyFiftyUsed || multiple || question.options.length <= 2} onClick={onFiftyFifty}><Scissors size={16} /><span>50:50</span></button>}
+                  {settings.lifelineAudiencePoll && <button className={`lifeline-button ${lifelines.audiencePollUsed ? "used" : ""}`} type="button" disabled={lifelines.audiencePollUsed || multiple} onClick={onAudiencePoll}><Users size={16} /><span>Audience</span></button>}
+                  {settings.lifelineTimeFreeze && <button className={`lifeline-button ${lifelines.timeFreezeUsed ? "used" : ""} ${freezeSeconds > 0 ? "active" : ""}`} type="button" disabled={lifelines.timeFreezeUsed || !settings.timed} onClick={onTimeFreeze}><Snowflake size={16} /><span>{freezeSeconds > 0 ? `${freezeSeconds}s` : "Freeze"}</span></button>}
+                  {settings.lifelineClue && <button className={`lifeline-button ${lifelines.clueUsed ? "used" : ""}`} type="button" disabled={lifelines.clueUsed} onClick={onClue}><Lightbulb size={16} /><span>Clue</span></button>}
+                </div>
+              </section>
+            )}
+
+            {clue && <div className="lifeline-clue"><Lightbulb size={18} /><div><strong>Your clue</strong><p>{clue}</p></div></div>}
+            {audiencePoll && <div className="audience-summary"><Users size={16} /><span>The audience has voted. Percentages appear beside each remaining choice.</span></div>}
+            {multiple && <div className="selection-hint"><Sparkles size={15} /><span>Select all correct answers{getCorrectIds(question).length > 1 ? ` (${expectedSelections} expected)` : ""}.</span></div>}
+            <div className="exam-options">
+              {question.options.map((option, index) => {
+                if (removedIds.has(option.id)) return null;
+                const isSelected = selected.includes(option.id);
+                const pollValue = audiencePoll?.[option.id];
+                return (
+                  <button className={`exam-option ${isSelected ? "selected" : ""} ${pollValue !== undefined ? "with-poll" : ""}`} key={option.id} type="button" onClick={() => onAnswer(option.id)}>
+                    <span className="option-letter">{String.fromCharCode(65 + index)}</span>
+                    <span className="option-text">{option.text}</span>
+                    {pollValue !== undefined && <span className="audience-poll"><i style={{ width: `${pollValue}%` }} /><b>{pollValue}%</b></span>}
+                    {isSelected && <span className="option-check"><Check size={18} /></span>}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="exam-footer"><button className="ghost-button" type="button" disabled={exam.currentIndex === 0} onClick={() => onMove(exam.currentIndex - 1)}><ChevronLeft size={16} /> Previous</button>{exam.currentIndex < exam.questions.length - 1 ? <button className="primary-button" type="button" onClick={() => onMove(exam.currentIndex + 1)}>Next question <ChevronRight size={16} /></button> : <button className="primary-button" type="button" onClick={onSubmit}>Review exam <Check size={16} /></button>}</div>
+          </section>
+        </main>
       </div>
-      {reviewOpen && <div className="modal-backdrop exam-review-backdrop"><section className="submit-review-modal" role="dialog" aria-modal="true" aria-labelledby="submit-review-title"><button className="modal-close" type="button" aria-label="Close review" onClick={onCloseReview}><X size={18} /></button><span className="modal-success-orb review-orb"><ListFilter size={28} /></span><p className="eyebrow">FINAL REVIEW</p><h2 id="submit-review-title">Ready to submit?</h2><p>Check unanswered, incomplete, and flagged questions before your answers are scored.</p><div className="submit-review-stats"><button type="button" onClick={() => { setNavFilter("unanswered"); onCloseReview(); }}><strong>{counts.unanswered}</strong><small>Unanswered</small></button><button type="button" onClick={() => { setNavFilter("incomplete"); onCloseReview(); }}><strong>{counts.incomplete}</strong><small>Incomplete</small></button><button type="button" onClick={() => { setNavFilter("flagged"); onCloseReview(); }}><strong>{counts.flagged}</strong><small>Flagged</small></button><div><strong>{counts.answered}</strong><small>Complete</small></div></div><div className="submit-question-grid">{exam.questions.map((item, index) => { const status = statusFor(item); return <button key={item.id} type="button" className={`${status.answered ? "complete" : status.incomplete ? "incomplete" : "unanswered"} ${status.flagged ? "flagged" : ""}`} onClick={() => { onMove(index); onCloseReview(); }}>{index + 1}</button>; })}</div><div className="submit-review-actions"><button className="ghost-button" type="button" onClick={onCloseReview}>Return to exam</button><button className="primary-button" type="button" onClick={onConfirmSubmit}>Submit now <Check size={16} /></button></div></section></div>}
+      {reviewOpen && <div className="modal-backdrop exam-review-backdrop"><section className="submit-review-modal" role="dialog" aria-modal="true" aria-labelledby="submit-review-title"><button className="modal-close" type="button" aria-label="Close review" onClick={onCloseReview}><X size={18} /></button><span className="modal-success-orb review-orb"><ListFilter size={28} /></span><p className="eyebrow">FINAL REVIEW</p><h2 id="submit-review-title">Ready to submit?</h2><p>Check unanswered, incomplete, and flagged questions before your answers are scored.</p><div className="submit-review-stats"><button type="button" onClick={() => { setNavFilter("unanswered"); onCloseReview(); setNavOpen(true); }}><strong>{counts.unanswered}</strong><small>Unanswered</small></button>{hasMultipleQuestions && <button type="button" onClick={() => { setNavFilter("incomplete"); onCloseReview(); setNavOpen(true); }}><strong>{counts.incomplete}</strong><small>Incomplete</small></button>}<button type="button" onClick={() => { setNavFilter("flagged"); onCloseReview(); setNavOpen(true); }}><strong>{counts.flagged}</strong><small>Flagged</small></button><div><strong>{counts.answered}</strong><small>Complete</small></div></div><div className="submit-question-grid">{exam.questions.map((item, index) => { const status = statusFor(item); return <button key={item.id} type="button" className={`${status.answered ? "complete" : status.incomplete ? "incomplete" : "unanswered"} ${status.flagged ? "flagged" : ""}`} onClick={() => { onMove(index); onCloseReview(); }}>{index + 1}</button>; })}</div><div className="submit-review-actions"><button className="ghost-button" type="button" onClick={onCloseReview}>Return to exam</button><button className="primary-button" type="button" onClick={onConfirmSubmit}>Submit now <Check size={16} /></button></div></section></div>}
     </div>
   );
 }
+
 
 function ResultsView({ details, settings, exam, onRetake, onRetakeWrong, onDashboard }: { details: ResultDetail[]; settings: ExamSettings; exam: ExamSession | null; onRetake: () => void; onRetakeWrong: () => void; onDashboard: () => void }) {
   const correct = details.filter((detail) => detail.correct).length;

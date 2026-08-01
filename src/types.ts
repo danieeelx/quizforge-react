@@ -20,6 +20,9 @@ export interface Question {
   sourcePage?: number;
   topic?: string;
   importWarnings?: string[];
+  aiConfidence?: number;
+  aiChanged?: boolean;
+  aiNotes?: string[];
 }
 
 export interface AttemptQuestionResult {
@@ -61,6 +64,25 @@ export interface ExamSettings {
   showExplanations: boolean;
   topicFilter?: string;
   weakAreasOnly?: boolean;
+  lifelineFiftyFifty?: boolean;
+  lifelineAudiencePoll?: boolean;
+  lifelineTimeFreeze?: boolean;
+  lifelineClue?: boolean;
+}
+
+export interface AudiencePollResult {
+  [optionId: string]: number;
+}
+
+export interface LifelineState {
+  fiftyFiftyUsed: boolean;
+  audiencePollUsed: boolean;
+  timeFreezeUsed: boolean;
+  clueUsed: boolean;
+  removedOptionIds: Record<string, string[]>;
+  audiencePolls: Record<string, AudiencePollResult>;
+  clues: Record<string, string>;
+  timerFrozenUntil?: number;
 }
 
 export interface ExamSession {
@@ -70,14 +92,27 @@ export interface ExamSession {
   currentIndex: number;
   startedAt: number;
   remainingSeconds: number;
+  lifelines?: LifelineState;
   submittedAt?: number;
+}
+
+export interface PasteAnswerDraft {
+  id: string;
+  text: string;
+  correct: boolean;
 }
 
 export interface PasteSectionDraft {
   id: string;
   title: string;
-  questions: string;
-  answers: string;
+  topic: string;
+  question: string;
+  answers: PasteAnswerDraft[];
+  selectionMode: SelectionMode;
+  activeTab: "question" | "answers";
+  expanded?: boolean;
+  /** Legacy v2.2-v2.4 field retained so old browser drafts can be migrated. */
+  questions?: string;
 }
 
 export interface UploadDraft {

@@ -1,32 +1,56 @@
-# QuizForge React v2.4
+# QuizForge React v2.7
 
-QuizForge is a local-first React and TypeScript study app that turns PDFs, scans, photos, pasted question banks, and notes into editable mock exams.
+QuizForge turns text-based PDF question banks and manually entered questions into editable mock exams. It uses React and TypeScript in the browser, PDF.js for local PDF text extraction, browser storage for saved study sets, and an optional server-side OpenAI import assistant.
 
-## Main workflow
-1. Upload a PDF/image or paste Questions and Answers in separate sections.
-2. QuizForge extracts content, optionally runs OCR, and detects answers.
-3. The Import Preview validates the result before it is saved.
-4. Search, filter, bulk-edit, verify answers, and organize questions by topic.
-5. Build mixed, topic-specific, or weak-area mock exams.
-6. Use exam navigation filters and the final review screen before submitting.
-7. Review scores, explanations, and topic performance.
+## Main features
 
-## Privacy
-- Text-based PDF extraction and question parsing run in the browser.
-- OCR runs in the browser, but its OCR engine is loaded from a CDN.
-- AI-enhanced generation is optional and sends extracted text only to the configured server endpoint.
-- Study sets, drafts, attempts, and exam recovery are stored in browser local storage.
+- Text-based PDF import and defensive question parsing
+- AI-assisted import repair with confidence and review notes
+- Per-question manual builder with collapsible question cards
+- Import validation and editable answer keys
+- Single-answer and multiple-answer questions
+- Timed and untimed exams
+- Optional 50:50, Audience Poll, Time Freeze, and Clue lifelines
+- Question flags, final review, scoring, weak-topic practice, and recovery
+- Light and dark mode
 
 ## Run locally
-Install Node.js 20 or newer and double-click `START_QUIZFORGE_REACT.bat`, or run:
 
-```bash
-npm install --include=dev
-npm run build
-npm start
+1. Install Node.js 20 or newer.
+2. Run `npm install`.
+3. Copy `.env.example` to `.env` only when enabling AI.
+4. Run `npm run build`.
+5. Run `npm start`.
+6. Open `http://127.0.0.1:4173`.
+
+The prebuilt `dist` folder can run without installing dependencies when served by a static host. The local Node server is required for local AI assistance.
+
+## Enable AI import assistance
+
+Set these server-side environment variables:
+
+```text
+OPENAI_API_KEY=your_secret_api_key
+OPENAI_MODEL=gpt-5-mini
 ```
 
-Open `http://127.0.0.1:4173`.
+Never put the API key in React source files, `dist`, or GitHub. When AI is configured, the Create Study Set page displays an **AI import assistance** switch. When enabled, extracted source text and the local parser result are sent to the server endpoint for review.
 
 ## Vercel
-The included `dist` directory is prebuilt. See `UPDATE_VERCEL.md` for the browser-only GitHub and Vercel update process.
+
+The repository contains prebuilt static files in `dist` and serverless functions in `api`. Keep the existing Vercel settings:
+
+```text
+Framework Preset: Other
+Build Command: echo "Using prebuilt dist"
+Output Directory: dist
+Install Command: echo "No install needed"
+```
+
+Then add `OPENAI_API_KEY` in Vercel Project Settings → Environment Variables and redeploy.
+
+## Limits
+
+- Scanned-image PDF OCR is not bundled in this version.
+- AI can make mistakes. Low-confidence or unsupported answers remain marked for manual review.
+- AI requests use the API account connected to your server key and may incur usage charges.

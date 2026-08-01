@@ -1,21 +1,24 @@
-# Update the existing Vercel deployment
+# Update the deployed Vercel site to QuizForge v2.7
 
-The current Vercel project serves the prebuilt `dist` folder.
-
-1. Extract `quizforge-vercel-update-v2.4.zip`.
-2. Open the existing `quizforge-react` repository on GitHub.
+1. Extract `quizforge-vercel-update-v2.7.zip`.
+2. Open the existing `quizforge-react` GitHub repository.
 3. Choose **Add file → Upload files**.
 4. Upload everything from inside the extracted update folder.
-5. Commit the files with `Update QuizForge to v2.4`.
+5. Commit with `Update QuizForge to v2.7`.
 6. Wait for Vercel to redeploy.
-7. Refresh the live website with **Ctrl + Shift + R**.
+7. Refresh the live site with `Ctrl + Shift + R`.
 
-Do not delete the repository first. Files with matching names are replaced by the update.
+Do not delete the repository first. Matching files will be replaced and the new `api` folder will be added.
 
-Recommended Vercel settings remain:
-- Framework preset: Other
-- Build command: `echo "Using prebuilt dist"`
-- Output directory: `dist`
-- Install command: `echo "No install needed"`
+## Enable AI import assistance
 
-OCR loads its browser engine from jsDelivr when it is first needed, so scanned-document OCR requires an internet connection. Text-based PDF extraction remains local in the browser.
+In Vercel:
+
+1. Open the QuizForge project.
+2. Go to **Settings → Environment Variables**.
+3. Add `OPENAI_API_KEY` with the secret OpenAI API key.
+4. Optionally add `OPENAI_MODEL` with `gpt-5-mini`.
+5. Apply the variables to Production and Preview.
+6. Redeploy the latest deployment.
+
+The AI switch appears only after `/api/health` confirms that the server-side key is configured.

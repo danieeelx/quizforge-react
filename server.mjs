@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { getAiHealth, runAiImportAssistance } from "./api/_shared.mjs";
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(rootDir, "dist");
@@ -10,7 +11,7 @@ loadLocalEnv(path.join(rootDir, ".env"));
 
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "127.0.0.1";
-const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+const model = process.env.OPENAI_MODEL || "gpt-5-mini";
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -36,16 +37,19 @@ const server = http.createServer(async (request, response) => {
     const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
 
     if (url.pathname === "/api/health") {
-      return sendJson(response, 200, {
-        ok: true,
-        aiConfigured: Boolean(process.env.OPENAI_API_KEY),
-        model: process.env.OPENAI_API_KEY ? model : null
-      });
+      return sendJson(response, 200, getAiHealth());
     }
 
     if (url.pathname === "/api/generate") {
       if (request.method !== "POST") return sendJson(response, 405, { error: "Method not allowed" });
       return handleGenerate(request, response);
+    }
+
+    if (url.pathname === "/api/ai-import") {
+      if (request.method !== "POST") return sendJson(response, 405, { error: "Method not allowed" });
+      const body = await readJsonBody(request, 3_500_000);
+      const result = await runAiImportAssistance(body);
+      return sendJson(response, 200, result);
     }
 
     if (request.method !== "GET" && request.method !== "HEAD") {
@@ -62,8 +66,8 @@ const server = http.createServer(async (request, response) => {
 server.listen(port, host, () => {
   console.log(`\nQuizForge React is running at http://${host}:${port}`);
   console.log(process.env.OPENAI_API_KEY
-    ? `AI generation is enabled with ${model}.\n`
-    : "AI generation is not configured. Local PDF and answer-key extraction still works.\n");
+    ? `AI import assistance is enabled with ${model}.\n`
+    : "AI import assistance is not configured. Local PDF and answer-key extraction still works.\n");
 });
 
 async function handleGenerate(request, response) {

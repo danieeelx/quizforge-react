@@ -17,12 +17,47 @@ interface PositionedEntry {
   correct: boolean;
 }
 
+interface OcrLoggerMessage {
+  status?: string;
+  progress?: number;
+}
+
+interface TesseractLike {
+  recognize: (
+    image: HTMLCanvasElement | File | Blob | string,
+    language?: string,
+    options?: { logger?: (message: OcrLoggerMessage) => void }
+  ) => Promise<{ data?: { text?: string } }>;
+}
+
+declare global {
+  interface Window {
+    Tesseract?: TesseractLike;
+  }
+}
+
+export interface ExtractionProgress {
+  progress: number;
+  stage: "text" | "ocr";
+  page: number;
+  totalPages: number;
+}
+
+export interface ExtractOptions {
+  enableOcr?: boolean;
+  forceOcr?: boolean;
+}
+
 /**
- * Extracts readable lines and adds two invisible parser markers:
- * [[PAGE n]] identifies page boundaries and [[CORRECT]] identifies options
- * whose A/B/C label is rendered in red. The latter is common in reviewer PDFs.
+ * Extracts readable lines and adds parser markers:
+ * [[PAGE n]] identifies page boundaries and [[CORRECT]] identifies answer labels
+ * rendered in red. Scanned or image-only pages can optionally fall back to OCR.
  */
-export async function extractPdfText(file: File, onProgress?: (progress: number) => void): Promise<string> {
+export async function extractPdfText(
+  file: File,
+  onProgress?: (progress: ExtractionProgress) => void,
+  options: ExtractOptions = {}
+): Promise<string> {
   const data = new Uint8Array(await file.arrayBuffer());
   const pdf = await pdfjsLib.getDocument({ data }).promise;
   const pages: string[] = [];
@@ -32,19 +67,64 @@ export async function extractPdfText(file: File, onProgress?: (progress: number)
     const content = await page.getTextContent({ includeMarkedContent: true });
     const items = (content.items as TextItemLike[]).filter((item) => typeof item.str === "string");
     const redItems = await detectRedAnswerLabels(page, items);
-    const lines = itemsToLines(items, redItems);
+    let lines = itemsToLines(items, redItems);
+    const readableLength = lines.join(" ").replace(/\s/g, "").length;
+    const shouldOcr = Boolean(options.forceOcr || (options.enableOcr && readableLength < 45));
+
+    if (shouldOcr) {
+      const ocrText = await ocrPdfPage(page, (pageProgress) => {
+        const completed = pageNumber - 1;
+        const combined = ((completed + pageProgress) / pdf.numPages) * 100;
+        onProgress?.({ progress: Math.round(combined), stage: "ocr", page: pageNumber, totalPages: pdf.numPages });
+      });
+      if (ocrText.trim().length > readableLength) {
+        lines = ocrText.replace(/\r/g, "").split("\n").map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
+      }
+    }
+
     pages.push(`[[PAGE ${pageNumber}]]\n${lines.join("\n")}`);
-    onProgress?.(Math.round((pageNumber / pdf.numPages) * 100));
+    onProgress?.({ progress: Math.round((pageNumber / pdf.numPages) * 100), stage: shouldOcr ? "ocr" : "text", page: pageNumber, totalPages: pdf.numPages });
   }
   return pages.join("\n\n");
+}
+
+export async function extractImageText(
+  file: File,
+  onProgress?: (progress: ExtractionProgress) => void
+): Promise<string> {
+  const text = await runOcr(file, (value) => onProgress?.({ progress: Math.round(value * 100), stage: "ocr", page: 1, totalPages: 1 }));
+  return `[[PAGE 1]]\n${text}`;
+}
+
+async function ocrPdfPage(page: any, onProgress?: (progress: number) => void): Promise<string> {
+  const viewport = page.getViewport({ scale: 2.1 });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.ceil(viewport.width));
+  canvas.height = Math.max(1, Math.ceil(viewport.height));
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("OCR could not create a page image.");
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: context, viewport, background: "rgb(255,255,255)" }).promise;
+  return runOcr(canvas, onProgress);
+}
+
+async function runOcr(image: HTMLCanvasElement | File | Blob, onProgress?: (progress: number) => void): Promise<string> {
+  const engine = window.Tesseract;
+  if (!engine) {
+    throw new Error("OCR could not load. Check your internet connection, refresh the page, and try again.");
+  }
+  const result = await engine.recognize(image, "eng", {
+    logger: (message) => {
+      if (typeof message.progress === "number") onProgress?.(message.progress);
+    }
+  });
+  return result.data?.text?.trim() ?? "";
 }
 
 async function detectRedAnswerLabels(page: any, items: TextItemLike[]): Promise<Set<number>> {
   const matches = new Set<number>();
   if (typeof document === "undefined") return matches;
-
-  // Only render when option-like text exists. This avoids unnecessary canvas work
-  // for ordinary notes that do not contain a question bank.
   const candidateIndexes = items
     .map((item, index) => ({ item, index }))
     .filter(({ item }) => /^\s*[A-H]\s*[).:-]/i.test(String(item.str ?? "")) || /^\s*[A-H]\s*$/i.test(String(item.str ?? "")));
@@ -58,13 +138,9 @@ async function detectRedAnswerLabels(page: any, items: TextItemLike[]): Promise<
     canvas.height = Math.max(1, Math.ceil(viewport.height));
     const context = canvas.getContext("2d", { willReadFrequently: true });
     if (!context) return matches;
-
-    context.save();
     context.fillStyle = "#ffffff";
     context.fillRect(0, 0, canvas.width, canvas.height);
-    context.restore();
     await page.render({ canvasContext: context, viewport, background: "rgb(255,255,255)" }).promise;
-
     for (const { item, index } of candidateIndexes) {
       if (hasRedPixels(item, viewport, context, canvas.width, canvas.height)) matches.add(index);
     }
@@ -74,13 +150,7 @@ async function detectRedAnswerLabels(page: any, items: TextItemLike[]): Promise<
   return matches;
 }
 
-function hasRedPixels(
-  item: TextItemLike,
-  viewport: any,
-  context: CanvasRenderingContext2D,
-  canvasWidth: number,
-  canvasHeight: number
-): boolean {
+function hasRedPixels(item: TextItemLike, viewport: any, context: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number): boolean {
   const transform = item.transform ?? [1, 0, 0, 1, 0, 0];
   const tx = pdfjsLib.Util.transform(viewport.transform, transform);
   const fontHeight = Math.max(8, Math.hypot(tx[2], tx[3]));
@@ -90,7 +160,6 @@ function hasRedPixels(
   const width = Math.max(1, Math.min(canvasWidth - x, Math.ceil(Math.min(estimatedWidth + 8, 90))));
   const height = Math.max(1, Math.min(canvasHeight - y, Math.ceil(fontHeight + 9)));
   if (width <= 0 || height <= 0) return false;
-
   const pixels = context.getImageData(x, y, width, height).data;
   let redPixels = 0;
   let coloredPixels = 0;
@@ -108,7 +177,6 @@ function hasRedPixels(
 
 function itemsToLines(items: TextItemLike[], redItems: Set<number>): string[] {
   const rows: Array<{ y: number; entries: PositionedEntry[] }> = [];
-
   items.forEach((item, index) => {
     const text = String(item.str ?? "").trim();
     if (!text) return;
@@ -119,30 +187,23 @@ function itemsToLines(items: TextItemLike[], redItems: Set<number>): string[] {
       row = { y, entries: [] };
       rows.push(row);
     }
-    row.entries.push({
-      x,
-      text,
-      width: Number(item.width ?? 0),
-      correct: redItems.has(index)
-    });
+    row.entries.push({ x, text, width: Number(item.width ?? 0), correct: redItems.has(index) });
   });
 
   rows.sort((a, b) => b.y - a.y);
-  return rows
-    .map((row) => {
-      row.entries.sort((a, b) => a.x - b.x);
-      let line = "";
-      let previousEnd = 0;
-      let correct = false;
-      row.entries.forEach((entry, index) => {
-        if (index > 0 && entry.x - previousEnd > 1.5) line += " ";
-        line += entry.text;
-        previousEnd = entry.x + Math.max(entry.width, entry.text.length * 3.2);
-        correct = correct || entry.correct;
-      });
-      const cleaned = line.replace(/\s+/g, " ").trim();
-      if (correct && /^\s*[A-H]\s*[).:-]/i.test(cleaned)) return `[[CORRECT]] ${cleaned}`;
-      return cleaned;
-    })
-    .filter(Boolean);
+  return rows.map((row) => {
+    row.entries.sort((a, b) => a.x - b.x);
+    let line = "";
+    let previousEnd = 0;
+    let correct = false;
+    row.entries.forEach((entry, index) => {
+      if (index > 0 && entry.x - previousEnd > 1.5) line += " ";
+      line += entry.text;
+      previousEnd = entry.x + Math.max(entry.width, entry.text.length * 3.2);
+      correct = correct || entry.correct;
+    });
+    const cleaned = line.replace(/\s+/g, " ").trim();
+    if (correct && /^\s*[A-H]\s*[).:-]/i.test(cleaned)) return `[[CORRECT]] ${cleaned}`;
+    return cleaned;
+  }).filter(Boolean);
 }

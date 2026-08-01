@@ -1,0 +1,22 @@
+1. Which component executes most general-purpose instructions in a computer?
+A. Monitor
+B. CPU
+C. Keyboard
+D. Speaker
+Answer: B
+Explanation: The CPU executes program instructions and performs calculations.
+
+2. Which memory type is normally volatile?
+A. SSD
+B. Blu-ray disc
+C. RAM
+D. ROM
+Answer: C
+Explanation: RAM normally loses its contents when power is removed.
+
+3. What is the primary purpose of an operating system?
+A. Manage hardware and provide services to applications
+B. Replace every application
+C. Only connect to Wi-Fi
+D. Increase screen size
+Answer: A

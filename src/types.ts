@@ -18,6 +18,14 @@ export interface Question {
   explanation: string;
   status: QuestionStatus;
   sourcePage?: number;
+  topic?: string;
+  importWarnings?: string[];
+}
+
+export interface AttemptQuestionResult {
+  questionId: string;
+  topic: string;
+  correct: boolean;
 }
 
 export interface Attempt {
@@ -27,6 +35,7 @@ export interface Attempt {
   correct: number;
   total: number;
   durationSeconds: number;
+  results?: AttemptQuestionResult[];
 }
 
 export interface StudySet {
@@ -50,6 +59,8 @@ export interface ExamSettings {
   timed: boolean;
   minutes: number;
   showExplanations: boolean;
+  topicFilter?: string;
+  weakAreasOnly?: boolean;
 }
 
 export interface ExamSession {
@@ -60,4 +71,35 @@ export interface ExamSession {
   startedAt: number;
   remainingSeconds: number;
   submittedAt?: number;
+}
+
+export interface PasteSectionDraft {
+  id: string;
+  title: string;
+  questions: string;
+  answers: string;
+}
+
+export interface UploadDraft {
+  title: string;
+  pasteSections: PasteSectionDraft[];
+  aiEnhanced: boolean;
+  ocrEnabled: boolean;
+  savedAt: string;
+  fileName?: string;
+}
+
+export interface ExamRecovery {
+  activeSetId: string;
+  exam: ExamSession;
+  settings: ExamSettings;
+  savedAt: string;
+}
+
+export interface TopicPerformance {
+  topic: string;
+  attempts: number;
+  correct: number;
+  total: number;
+  accuracy: number;
 }

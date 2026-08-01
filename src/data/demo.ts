@@ -8,6 +8,8 @@ function makeQuestion(question: string, options: string[], correctIndex: number,
     question,
     options: mapped,
     correctOptionId: mapped[correctIndex]?.id ?? null,
+    correctOptionIds: mapped[correctIndex] ? [mapped[correctIndex].id] : [],
+    selectionMode: "single" as const,
     explanation,
     status: "verified" as const
   };

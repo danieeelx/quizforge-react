@@ -6,6 +6,8 @@ function makeQuestion(question, options, correctIndex, explanation) {
         question,
         options: mapped,
         correctOptionId: mapped[correctIndex]?.id ?? null,
+        correctOptionIds: mapped[correctIndex] ? [mapped[correctIndex].id] : [],
+        selectionMode: "single",
         explanation,
         status: "verified"
     };

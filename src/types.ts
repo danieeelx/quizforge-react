@@ -1,4 +1,5 @@
 export type QuestionStatus = "verified" | "review";
+export type SelectionMode = "single" | "multiple";
 
 export interface AnswerOption {
   id: string;
@@ -9,7 +10,11 @@ export interface Question {
   id: string;
   question: string;
   options: AnswerOption[];
+  /** Legacy single-answer field retained for older saved study sets. */
   correctOptionId: string | null;
+  /** Supports questions such as “Choose two” and “Choose three.” */
+  correctOptionIds?: string[];
+  selectionMode?: SelectionMode;
   explanation: string;
   status: QuestionStatus;
   sourcePage?: number;
@@ -49,7 +54,7 @@ export interface ExamSettings {
 
 export interface ExamSession {
   questions: ExamQuestion[];
-  responses: Record<string, string>;
+  responses: Record<string, string[]>;
   flagged: Record<string, boolean>;
   currentIndex: number;
   startedAt: number;

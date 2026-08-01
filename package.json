@@ -1,6 +1,6 @@
 {
   "name": "quizforge-react",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
   "description": "A local-first React app that turns PDFs and notes into editable mock exams.",
@@ -8,7 +8,8 @@
     "build": "tsc -p tsconfig.emit.json && node copy-assets.mjs",
     "start": "node server.mjs",
     "dev": "npm run build && node server.mjs",
-    "check": "tsc -p tsconfig.emit.json --noEmit"
+    "check": "tsc -p tsconfig.emit.json --noEmit",
+    "test:parser": "node tests/parser-smoke.mjs"
   },
   "dependencies": {
     "lucide-react": "0.468.0",

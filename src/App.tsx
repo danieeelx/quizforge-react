@@ -29,7 +29,7 @@ import {
 import type { ExamQuestion, ExamSession, ExamSettings, Question, StudySet } from "./types.js";
 import { createDemoSet } from "./data/demo.js";
 import { extractPdfText } from "./lib/pdf.js";
-import { generateLocalQuestions, parseQuestionBank } from "./lib/parser.js";
+import { generateLocalQuestions, parseQuestionBankDetailed } from "./lib/parser.js";
 import { loadStudySets, loadTheme, saveStudySets, saveTheme } from "./lib/storage.js";
 import { bestScore, formatDate, formatDuration, shuffle, stripExtension, uid } from "./lib/utils.js";
 
@@ -39,8 +39,37 @@ type ProcessingStep = "read" | "detect" | "answers" | "finish";
 
 interface ResultDetail {
   question: ExamQuestion;
-  selectedOptionId: string | null;
+  selectedOptionIds: string[];
   correct: boolean;
+}
+
+interface ImportSummary {
+  title: string;
+  extracted: number;
+  expected: number;
+  verified: number;
+  warnings: string[];
+}
+
+
+function getCorrectIds(question: Question): string[] {
+  if (Array.isArray(question.correctOptionIds) && question.correctOptionIds.length) return question.correctOptionIds;
+  return question.correctOptionId ? [question.correctOptionId] : [];
+}
+
+function isVerifiedQuestion(question: Question): boolean {
+  const ids = getCorrectIds(question);
+  return ids.length > 0 && ids.every((id) => question.options.some((option) => option.id === id));
+}
+
+function isMultipleQuestion(question: Question): boolean {
+  return question.selectionMode === "multiple" || getCorrectIds(question).length > 1 || /\bchoose\s+(?:two|three|four|five|six|seven|eight|[2-8])\b/i.test(question.question);
+}
+
+function sameAnswerSet(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  const expected = new Set(right);
+  return left.every((id) => expected.has(id));
 }
 
 const defaultSettings: ExamSettings = {
@@ -74,6 +103,7 @@ function App() {
   const [exam, setExam] = useState<ExamSession | null>(null);
   const [resultDetails, setResultDetails] = useState<ResultDetail[]>([]);
   const [toast, setToast] = useState("");
+  const [importSummary, setImportSummary] = useState<ImportSummary | null>(null);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -178,7 +208,8 @@ function App() {
 
       setProcessingStep("detect");
       setProcessingProgress(58);
-      let questions = parseQuestionBank(sourceText);
+      const parsed = parseQuestionBankDetailed(sourceText);
+      let questions = parsed.questions;
 
       setProcessingStep("answers");
       setProcessingProgress(72);
@@ -210,6 +241,14 @@ function App() {
       setActiveSetId(set.id);
       setEditingQuestionId(set.questions[0]?.id ?? null);
       setProcessingProgress(100);
+      const verified = questions.filter(isVerifiedQuestion).length;
+      setImportSummary({
+        title: set.title,
+        extracted: questions.length,
+        expected: aiEnhanced ? questions.length : parsed.highestQuestionNumber || questions.length,
+        verified,
+        warnings: aiEnhanced ? [] : parsed.warnings
+      });
       setToast(`${questions.length} questions prepared`);
       await delay(280);
       navigate("editor");
@@ -240,6 +279,8 @@ function App() {
         question: question.question,
         options,
         correctOptionId: options[question.correctIndex]?.id ?? null,
+        correctOptionIds: options[question.correctIndex] ? [options[question.correctIndex].id] : [],
+        selectionMode: "single",
         explanation: question.explanation ?? "",
         status: options[question.correctIndex] ? "verified" : "review"
       };
@@ -270,7 +311,34 @@ function App() {
   }
 
   function markCorrect(questionId: string, optionId: string) {
-    updateQuestion(questionId, { correctOptionId: optionId, status: "verified" });
+    const question = activeSet?.questions.find((item) => item.id === questionId);
+    if (!question) return;
+    const multiple = isMultipleQuestion(question);
+    const currentIds = getCorrectIds(question);
+    const nextIds = multiple
+      ? currentIds.includes(optionId)
+        ? currentIds.filter((id) => id !== optionId)
+        : [...currentIds, optionId]
+      : [optionId];
+    updateQuestion(questionId, {
+      correctOptionId: nextIds[0] ?? null,
+      correctOptionIds: nextIds,
+      status: nextIds.length ? "verified" : "review"
+    });
+  }
+
+  function setSelectionMode(questionId: string, mode: "single" | "multiple") {
+    const question = activeSet?.questions.find((item) => item.id === questionId);
+    if (!question) return;
+    const currentIds = getCorrectIds(question);
+    const nextIds = mode === "single" ? currentIds.slice(0, 1) : currentIds;
+    updateQuestion(questionId, {
+      selectionMode: mode,
+      correctOptionId: nextIds[0] ?? null,
+      correctOptionIds: nextIds,
+      status: nextIds.length ? "verified" : "review"
+    });
+    setToast(mode === "multiple" ? "Multiple-answer mode enabled" : "Single-answer mode enabled");
   }
 
   function addOption(questionId: string) {
@@ -294,8 +362,9 @@ function App() {
         ? {
             ...item,
             options: item.options.filter((option) => option.id !== optionId),
-            correctOptionId: item.correctOptionId === optionId ? null : item.correctOptionId,
-            status: item.correctOptionId === optionId ? "review" : item.status
+            correctOptionId: getCorrectIds(item).filter((id) => id !== optionId)[0] ?? null,
+            correctOptionIds: getCorrectIds(item).filter((id) => id !== optionId),
+            status: getCorrectIds(item).filter((id) => id !== optionId).length ? item.status : "review"
           }
         : item)
     }));
@@ -308,6 +377,8 @@ function App() {
       question: "New question",
       options,
       correctOptionId: null,
+      correctOptionIds: [],
+      selectionMode: "single",
       explanation: "",
       status: "review"
     };
@@ -330,7 +401,8 @@ function App() {
       id: uid(),
       question: `${original.question} (copy)`,
       options,
-      correctOptionId: original.correctOptionId ? optionMap.get(original.correctOptionId) ?? null : null
+      correctOptionId: original.correctOptionId ? optionMap.get(original.correctOptionId) ?? null : null,
+      correctOptionIds: getCorrectIds(original).map((id) => optionMap.get(id)).filter((id): id is string => Boolean(id))
     };
     updateActiveSet((set) => ({ ...set, questions: [...set.questions, copy] }));
     setEditingQuestionId(copy.id);
@@ -360,7 +432,7 @@ function App() {
 
   function openSetup() {
     if (!activeSet) return;
-    const verified = activeSet.questions.filter((question) => question.correctOptionId && question.options.some((option) => option.id === question.correctOptionId));
+    const verified = activeSet.questions.filter(isVerifiedQuestion);
     if (!verified.length) {
       setToast("Mark at least one correct answer before starting an exam");
       return;
@@ -371,9 +443,7 @@ function App() {
 
   function beginExam(questionIds?: string[]) {
     if (!activeSet) return;
-    let pool = activeSet.questions.filter((question) =>
-      question.correctOptionId && question.options.some((option) => option.id === question.correctOptionId)
-    );
+    let pool = activeSet.questions.filter(isVerifiedQuestion);
     if (questionIds?.length) pool = pool.filter((question) => questionIds.includes(question.id));
     if (!pool.length) {
       setToast("No verified questions are available");
@@ -402,7 +472,13 @@ function App() {
   function answerQuestion(optionId: string) {
     if (!exam) return;
     const question = exam.questions[exam.currentIndex];
-    setExam({ ...exam, responses: { ...exam.responses, [question.id]: optionId } });
+    const current = exam.responses[question.id] ?? [];
+    const next = isMultipleQuestion(question)
+      ? current.includes(optionId)
+        ? current.filter((id) => id !== optionId)
+        : [...current, optionId]
+      : [optionId];
+    setExam({ ...exam, responses: { ...exam.responses, [question.id]: next } });
   }
 
   function toggleFlag() {
@@ -418,15 +494,16 @@ function App() {
 
   function submitExam(autoSubmitted = false) {
     if (!exam || !activeSet) return;
-    const unanswered = exam.questions.filter((question) => !exam.responses[question.id]).length;
+    const unanswered = exam.questions.filter((question) => !(exam.responses[question.id]?.length)).length;
     if (!autoSubmitted && unanswered && !window.confirm(`Submit with ${unanswered} unanswered question${unanswered === 1 ? "" : "s"}?`)) return;
 
     const details = exam.questions.map((question) => {
-      const selectedOptionId = exam.responses[question.id] ?? null;
+      const selectedOptionIds = exam.responses[question.id] ?? [];
+      const correctOptionIds = getCorrectIds(question);
       return {
         question,
-        selectedOptionId,
-        correct: Boolean(selectedOptionId && selectedOptionId === question.correctOptionId)
+        selectedOptionIds,
+        correct: selectedOptionIds.length > 0 && sameAnswerSet(selectedOptionIds, correctOptionIds)
       };
     });
     const correct = details.filter((detail) => detail.correct).length;
@@ -535,6 +612,7 @@ function App() {
               onUpdateQuestion={updateQuestion}
               onUpdateOption={updateOption}
               onMarkCorrect={markCorrect}
+              onSelectionMode={setSelectionMode}
               onAddOption={addOption}
               onRemoveOption={removeOption}
               onAddQuestion={addQuestion}
@@ -556,7 +634,37 @@ function App() {
           )}
         </Shell>
       )}
-      {toast && <div className="toast" role="status">{toast}</div>}
+      {toast && <div className="toast" role="status"><span className="toast-icon"><Check size={15} /></span><span>{toast}</span><i /></div>}
+      {importSummary && <ImportSummaryModal summary={importSummary} onClose={() => setImportSummary(null)} />}
+    </div>
+  );
+}
+
+function ImportSummaryModal({ summary, onClose }: { summary: ImportSummary; onClose: () => void }) {
+  const complete = summary.expected === summary.extracted && summary.warnings.length === 0;
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="import-modal" role="dialog" aria-modal="true" aria-labelledby="import-title">
+        <div className={`modal-success-orb ${complete ? "complete" : "warning"}`}>
+          {complete ? <Check size={29} /> : <CircleHelp size={29} />}
+          <span className="orb-ring" />
+        </div>
+        <button className="modal-close" type="button" aria-label="Close import summary" onClick={onClose}><X size={18} /></button>
+        <p className="eyebrow">PDF IMPORT COMPLETE</p>
+        <h2 id="import-title">{complete ? "Everything lined up." : "Import finished with notes."}</h2>
+        <p className="modal-copy">“{summary.title}” is ready for review. QuizForge compared the extracted items with the numbering found in the PDF.</p>
+        <div className="import-stats">
+          <div><strong>{summary.extracted}</strong><small>Questions extracted</small></div>
+          <div><strong>{summary.expected}</strong><small>Numbered in PDF</small></div>
+          <div><strong>{summary.verified}</strong><small>Answers detected</small></div>
+        </div>
+        {summary.warnings.length > 0 && (
+          <div className="modal-warning-list">
+            {summary.warnings.slice(0, 3).map((warning) => <p key={warning}><CircleHelp size={14} /> {warning}</p>)}
+          </div>
+        )}
+        <button className="primary-button modal-primary" type="button" onClick={onClose}>Review questions <ChevronRight size={16} /></button>
+      </section>
     </div>
   );
 }
@@ -616,7 +724,7 @@ function Shell({ view, theme, sidebarOpen, children, onToggleSidebar, onNavigate
             <button className="primary-button compact" type="button" onClick={onNew}><Plus size={17} /> New study set</button>
           </div>
         </header>
-        {children}
+        <div key={view} className="view-transition">{children}</div>
       </main>
     </div>
   );
@@ -864,6 +972,7 @@ interface EditorProps {
   onUpdateQuestion: (id: string, patch: Partial<Question>) => void;
   onUpdateOption: (questionId: string, optionId: string, text: string) => void;
   onMarkCorrect: (questionId: string, optionId: string) => void;
+  onSelectionMode: (questionId: string, mode: "single" | "multiple") => void;
   onAddOption: (questionId: string) => void;
   onRemoveOption: (questionId: string, optionId: string) => void;
   onAddQuestion: () => void;
@@ -874,15 +983,18 @@ interface EditorProps {
   onDashboard: () => void;
 }
 
-function EditorView({ studySet, question, onSelect, onUpdateQuestion, onUpdateOption, onMarkCorrect, onAddOption, onRemoveOption, onAddQuestion, onDuplicate, onDelete, onDeleteSet, onSetup, onDashboard }: EditorProps) {
+function EditorView({ studySet, question, onSelect, onUpdateQuestion, onUpdateOption, onMarkCorrect, onSelectionMode, onAddOption, onRemoveOption, onAddQuestion, onDuplicate, onDelete, onDeleteSet, onSetup, onDashboard }: EditorProps) {
   const index = studySet.questions.findIndex((item) => item.id === question.id);
-  const verified = studySet.questions.filter((item) => item.correctOptionId).length;
+  const verified = studySet.questions.filter(isVerifiedQuestion).length;
   const next = studySet.questions[index + 1];
   const previous = studySet.questions[index - 1];
+  const correctIds = getCorrectIds(question);
+  const ready = isVerifiedQuestion(question);
+  const multiple = isMultipleQuestion(question);
   return (
     <div className="page-wrap editor-page">
       <div className="page-head editor-head">
-        <div><button className="breadcrumb-button" type="button" onClick={onDashboard}>Dashboard</button><span className="breadcrumb-separator">/</span><span>Review questions</span><h1>Review extracted questions</h1><p>Verify each correct answer before starting a scored exam.</p></div>
+        <div><button className="breadcrumb-button" type="button" onClick={onDashboard}>Dashboard</button><span className="breadcrumb-separator">/</span><span>Review questions</span><h1>Review extracted questions</h1><p>QuizForge found the structure; you stay in control of the answer key.</p></div>
         <div className="toolbar"><button className="ghost-button danger-ghost" type="button" onClick={() => onDeleteSet(studySet.id)}><Trash2 size={16} /> Delete set</button><button className="primary-button" type="button" onClick={onSetup}>Set up exam <ChevronRight size={16} /></button></div>
       </div>
       <div className="editor-layout">
@@ -891,21 +1003,24 @@ function EditorView({ studySet, question, onSelect, onUpdateQuestion, onUpdateOp
           <div className="question-list">
             {studySet.questions.map((item, itemIndex) => (
               <button key={item.id} className={`${item.id === question.id ? "active" : ""} ${item.status === "review" ? "warn" : ""}`} type="button" onClick={() => onSelect(item.id)}>
-                <span>{itemIndex + 1}</span><span className="question-list-copy">{item.question}</span>{item.correctOptionId ? <Check size={14} /> : <CircleHelp size={14} />}
+                <span>{itemIndex + 1}</span><span className="question-list-copy">{item.question}</span>{isVerifiedQuestion(item) ? <Check size={14} /> : <CircleHelp size={14} />}
               </button>
             ))}
           </div>
           <button className="ghost-button full-button" type="button" onClick={onAddQuestion}><Plus size={16} /> Add question</button>
         </aside>
-        <section className="question-editor-card">
-          <div className="editor-card-head"><div><span className={`status ${question.correctOptionId ? "ready" : "draft"}`}>{question.correctOptionId ? "Answer verified" : "Needs review"}</span><h2>Question {index + 1}</h2><p>{question.correctOptionId ? "A correct answer is selected. You can still edit it." : "Select the correct option before using this question in an exam."}</p></div><div className="editor-actions"><button className="icon-button" type="button" title="Duplicate" onClick={() => onDuplicate(question.id)}><Copy size={17} /></button><button className="icon-button danger-icon" type="button" title="Delete" onClick={() => onDelete(question.id)}><Trash2 size={17} /></button></div></div>
+        <section className="question-editor-card" key={question.id}>
+          <div className="editor-card-head"><div><div className="editor-status-line"><span className={`status ${ready ? "ready" : "draft"}`}>{ready ? `${correctIds.length} answer${correctIds.length === 1 ? "" : "s"} verified` : "Needs review"}</span>{question.sourcePage && <span className="page-chip">Page {question.sourcePage}</span>}</div><h2>Question {index + 1}</h2><p>{multiple ? "This is a multiple-answer question. Select every correct choice." : ready ? "The detected answer is selected. You can still change it." : "Select the correct option before using this question in an exam."}</p></div><div className="editor-actions"><button className="icon-button" type="button" title="Duplicate" onClick={() => onDuplicate(question.id)}><Copy size={17} /></button><button className="icon-button danger-icon" type="button" title="Delete" onClick={() => onDelete(question.id)}><Trash2 size={17} /></button></div></div>
           <div className="form-group"><label htmlFor="question-text">Question</label><textarea id="question-text" className="question-input" value={question.question} onChange={(event) => onUpdateQuestion(question.id, { question: event.target.value })} /></div>
-          <div className="form-group"><div className="label-row"><label>Answer choices</label><small>Select the check button beside the correct answer.</small></div><div className="answer-grid">
-            {question.options.map((option, optionIndex) => (
-              <div className={`answer-row ${question.correctOptionId === option.id ? "correct" : ""}`} key={option.id}>
-                <GripVertical className="drag-handle" size={17} /><span className="answer-letter">{String.fromCharCode(65 + optionIndex)}</span><input value={option.text} onChange={(event) => onUpdateOption(question.id, option.id, event.target.value)} aria-label={`Answer ${String.fromCharCode(65 + optionIndex)}`} /><button className={`correct-radio ${question.correctOptionId === option.id ? "selected" : ""}`} type="button" title="Mark as correct" onClick={() => onMarkCorrect(question.id, option.id)}><Check size={16} /></button><button className="remove-option" type="button" title="Remove option" onClick={() => onRemoveOption(question.id, option.id)}><X size={15} /></button>
-              </div>
-            ))}
+          <div className="form-group"><div className="label-row answer-heading"><div><label>Answer choices</label><small>{multiple ? "Check all correct answers." : "Choose one correct answer."}</small></div><select className="answer-mode-select" aria-label="Answer selection mode" value={multiple ? "multiple" : "single"} onChange={(event) => onSelectionMode(question.id, event.target.value as "single" | "multiple")}><option value="single">Single answer</option><option value="multiple">Multiple answers</option></select></div><div className="answer-grid">
+            {question.options.map((option, optionIndex) => {
+              const selected = correctIds.includes(option.id);
+              return (
+                <div className={`answer-row ${selected ? "correct" : ""}`} key={option.id}>
+                  <GripVertical className="drag-handle" size={17} /><span className="answer-letter">{String.fromCharCode(65 + optionIndex)}</span><input value={option.text} onChange={(event) => onUpdateOption(question.id, option.id, event.target.value)} aria-label={`Answer ${String.fromCharCode(65 + optionIndex)}`} /><button className={`correct-radio ${selected ? "selected" : ""}`} type="button" title={selected ? "Correct answer selected" : "Mark as correct"} onClick={() => onMarkCorrect(question.id, option.id)}><Check size={16} /></button><button className="remove-option" type="button" title="Remove option" onClick={() => onRemoveOption(question.id, option.id)}><X size={15} /></button>
+                </div>
+              );
+            })}
           </div><button className="text-button add-option" type="button" onClick={() => onAddOption(question.id)}><Plus size={15} /> Add answer choice</button></div>
           <div className="form-group"><label htmlFor="explanation">Explanation</label><textarea id="explanation" className="explanation-input" value={question.explanation} onChange={(event) => onUpdateQuestion(question.id, { explanation: event.target.value })} placeholder="Explain why the selected answer is correct." /></div>
           <div className="editor-footer"><span>Changes save automatically in this browser.</span><div className="toolbar"><button className="ghost-button" type="button" disabled={!previous} onClick={() => previous && onSelect(previous.id)}><ChevronLeft size={16} /> Previous</button><button className="primary-button" type="button" onClick={() => next ? onSelect(next.id) : onSetup}>{next ? "Next question" : "Set up exam"}<ChevronRight size={16} /></button></div></div>
@@ -916,7 +1031,7 @@ function EditorView({ studySet, question, onSelect, onUpdateQuestion, onUpdateOp
 }
 
 function SetupView({ studySet, settings, onSettings, onBack, onStart }: { studySet: StudySet; settings: ExamSettings; onSettings: (settings: ExamSettings) => void; onBack: () => void; onStart: () => void }) {
-  const verified = studySet.questions.filter((question) => question.correctOptionId);
+  const verified = studySet.questions.filter(isVerifiedQuestion);
   const preview = verified[0];
   const update = <K extends keyof ExamSettings>(key: K, value: ExamSettings[K]) => onSettings({ ...settings, [key]: value });
   return (
@@ -926,12 +1041,12 @@ function SetupView({ studySet, settings, onSettings, onBack, onStart }: { studyS
         <section className="setup-panel"><h2>Exam preferences</h2><p>These settings apply only to the next attempt.</p>
           <div className="setting-row"><div className="setting-copy"><strong>Number of questions</strong><small>{verified.length} verified questions are available.</small></div><select value={Math.min(settings.questionCount, verified.length)} onChange={(event) => update("questionCount", Number(event.target.value))}>{Array.from({ length: verified.length }, (_, index) => index + 1).filter((value) => value === verified.length || value % 5 === 0 || value === 1).map((value) => <option value={value} key={value}>{value}</option>)}</select></div>
           <ToggleSetting label="Shuffle questions" description="Use a different question order for every attempt." checked={settings.shuffleQuestions} onChange={(value) => update("shuffleQuestions", value)} />
-          <ToggleSetting label="Shuffle answer choices" description="Randomize A–D without changing the correct answer." checked={settings.shuffleAnswers} onChange={(value) => update("shuffleAnswers", value)} />
+          <ToggleSetting label="Shuffle answer choices" description="Randomize the choice order without changing the answer key." checked={settings.shuffleAnswers} onChange={(value) => update("shuffleAnswers", value)} />
           <ToggleSetting label="Timed exam" description="Show a countdown while answering." checked={settings.timed} onChange={(value) => update("timed", value)} />
           <div className={`setting-row ${!settings.timed ? "disabled-setting" : ""}`}><div className="setting-copy"><strong>Time limit</strong><small>Select the exam duration.</small></div><select disabled={!settings.timed} value={settings.minutes} onChange={(event) => update("minutes", Number(event.target.value))}>{[5, 10, 20, 30, 45, 60, 90].map((value) => <option value={value} key={value}>{value} minutes</option>)}</select></div>
           <ToggleSetting label="Show explanations" description="Display explanations in the answer review." checked={settings.showExplanations} onChange={(value) => update("showExplanations", value)} />
         </section>
-        <aside className="preview-panel"><div className="preview-header"><span className="pill"><Sparkles size={13} /> EXAM PREVIEW</span><h2>{studySet.title}</h2><p>This is how the test experience will feel.</p></div>{preview && <div className="exam-preview-card"><span>QUESTION 01</span><h3>{preview.question}</h3>{preview.options.slice(0, 3).map((option, index) => <div className="mini-answer" key={option.id}><span>{String.fromCharCode(65 + index)}</span>{option.text}</div>)}</div>}<div className="exam-details"><div><strong>{Math.min(settings.questionCount, verified.length)}</strong><small>Questions</small></div><div><strong>{settings.timed ? `${settings.minutes}m` : "∞"}</strong><small>Time limit</small></div><div><strong>70%</strong><small>Target</small></div></div><button className="primary-button start-button" type="button" onClick={onStart}>Start mock exam <ChevronRight size={17} /></button></aside>
+        <aside className="preview-panel"><div className="preview-header"><span className="pill"><Sparkles size={13} /> EXAM PREVIEW</span><h2>{studySet.title}</h2><p>This is how the test experience will feel.</p></div>{preview && <div className="exam-preview-card"><span>{isMultipleQuestion(preview) ? "MULTIPLE ANSWERS" : "QUESTION 01"}</span><h3>{preview.question}</h3>{preview.options.slice(0, 3).map((option, index) => <div className="mini-answer" key={option.id}><span>{String.fromCharCode(65 + index)}</span>{option.text}</div>)}</div>}<div className="exam-details"><div><strong>{Math.min(settings.questionCount, verified.length)}</strong><small>Questions</small></div><div><strong>{settings.timed ? `${settings.minutes}m` : "∞"}</strong><small>Time limit</small></div><div><strong>70%</strong><small>Target</small></div></div><button className="primary-button start-button" type="button" onClick={onStart}>Start mock exam <ChevronRight size={17} /></button></aside>
       </div>
     </div>
   );
@@ -941,17 +1056,23 @@ function ToggleSetting({ label, description, checked, onChange }: { label: strin
   return <label className="setting-row"><div className="setting-copy"><strong>{label}</strong><small>{description}</small></div><input className="switch-input" type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /></label>;
 }
 
+
 function ExamView({ exam, settings, onAnswer, onFlag, onMove, onSubmit }: { exam: ExamSession | null; settings: ExamSettings; onAnswer: (id: string) => void; onFlag: () => void; onMove: (index: number) => void; onSubmit: () => void }) {
   if (!exam) return null;
   const question = exam.questions[exam.currentIndex];
-  const selected = exam.responses[question.id];
-  const answered = Object.keys(exam.responses).length;
+  const selected = exam.responses[question.id] ?? [];
+  const answered = Object.values(exam.responses).filter((answer) => answer.length > 0).length;
+  const multiple = isMultipleQuestion(question);
+  const expectedSelections = Math.max(2, getCorrectIds(question).length);
   return (
     <div className="exam-shell">
       <header className="exam-topbar"><div className="exam-brand"><span className="brand-mark">Q</span><span><strong>QuizForge Exam</strong><small>Practice mode</small></span></div><div className="exam-meta"><div className="timer"><Clock3 size={17} /><span>{settings.timed ? formatDuration(exam.remainingSeconds) : "Untimed"}</span><small>{settings.timed ? "remaining" : "no limit"}</small></div><button className="primary-button compact" type="button" onClick={onSubmit}>Submit exam</button></div></header>
       <div className="exam-body">
-        <aside className="exam-nav"><h2>Question navigator</h2><p>{answered} of {exam.questions.length} answered</p><div className="question-dots">{exam.questions.map((item, index) => <button key={item.id} type="button" className={`question-dot ${index === exam.currentIndex ? "current" : exam.responses[item.id] ? "answered" : ""} ${exam.flagged[item.id] ? "flagged" : ""}`} onClick={() => onMove(index)}>{index + 1}</button>)}</div><div className="exam-legend"><span><i className="legend-current" /> Current</span><span><i className="legend-answered" /> Answered</span><span><i className="legend-flagged" /> Flagged</span><span><i /> Not answered</span></div></aside>
-        <main className="exam-main"><div className="exam-progress"><span>Question {exam.currentIndex + 1} of {exam.questions.length}</span><span>{Math.round(((exam.currentIndex + 1) / exam.questions.length) * 100)}%</span></div><div className="exam-progress-track"><span style={{ width: `${((exam.currentIndex + 1) / exam.questions.length) * 100}%` }} /></div><section className="exam-question-card"><div className="question-kicker"><span>MULTIPLE CHOICE</span><button className={`flag-button ${exam.flagged[question.id] ? "flagged" : ""}`} type="button" onClick={onFlag}><Flag size={15} /> {exam.flagged[question.id] ? "Flagged" : "Flag for review"}</button></div><h1>{question.question}</h1><div className="exam-options">{question.options.map((option, index) => <button className={`exam-option ${selected === option.id ? "selected" : ""}`} key={option.id} type="button" onClick={() => onAnswer(option.id)}><span className="option-letter">{String.fromCharCode(65 + index)}</span><span>{option.text}</span>{selected === option.id && <Check size={18} />}</button>)}</div><div className="exam-footer"><button className="ghost-button" type="button" disabled={exam.currentIndex === 0} onClick={() => onMove(exam.currentIndex - 1)}><ChevronLeft size={16} /> Previous</button>{exam.currentIndex < exam.questions.length - 1 ? <button className="primary-button" type="button" onClick={() => onMove(exam.currentIndex + 1)}>Next question <ChevronRight size={16} /></button> : <button className="primary-button" type="button" onClick={onSubmit}>Finish exam <Check size={16} /></button>}</div></section></main>
+        <aside className="exam-nav"><h2>Question navigator</h2><p>{answered} of {exam.questions.length} answered</p><div className="question-dots">{exam.questions.map((item, index) => <button key={item.id} type="button" className={`question-dot ${index === exam.currentIndex ? "current" : exam.responses[item.id]?.length ? "answered" : ""} ${exam.flagged[item.id] ? "flagged" : ""}`} onClick={() => onMove(index)}>{index + 1}</button>)}</div><div className="exam-legend"><span><i className="legend-current" /> Current</span><span><i className="legend-answered" /> Answered</span><span><i className="legend-flagged" /> Flagged</span><span><i /> Not answered</span></div></aside>
+        <main className="exam-main"><div className="exam-progress"><span>Question {exam.currentIndex + 1} of {exam.questions.length}</span><span>{Math.round(((exam.currentIndex + 1) / exam.questions.length) * 100)}%</span></div><div className="exam-progress-track"><span style={{ width: `${((exam.currentIndex + 1) / exam.questions.length) * 100}%` }} /></div><section className="exam-question-card" key={question.id}><div className="question-kicker"><span>{multiple ? "MULTIPLE ANSWERS" : "MULTIPLE CHOICE"}</span><button className={`flag-button ${exam.flagged[question.id] ? "flagged" : ""}`} type="button" onClick={onFlag}><Flag size={15} /> {exam.flagged[question.id] ? "Flagged" : "Flag for review"}</button></div><h1>{question.question}</h1>{multiple && <div className="selection-hint"><Sparkles size={15} /><span>Select all correct answers{getCorrectIds(question).length > 1 ? ` (${expectedSelections} expected)` : ""}.</span></div>}<div className="exam-options">{question.options.map((option, index) => {
+          const isSelected = selected.includes(option.id);
+          return <button className={`exam-option ${isSelected ? "selected" : ""}`} key={option.id} type="button" onClick={() => onAnswer(option.id)}><span className="option-letter">{String.fromCharCode(65 + index)}</span><span>{option.text}</span>{isSelected && <span className="option-check"><Check size={18} /></span>}</button>;
+        })}</div><div className="exam-footer"><button className="ghost-button" type="button" disabled={exam.currentIndex === 0} onClick={() => onMove(exam.currentIndex - 1)}><ChevronLeft size={16} /> Previous</button>{exam.currentIndex < exam.questions.length - 1 ? <button className="primary-button" type="button" onClick={() => onMove(exam.currentIndex + 1)}>Next question <ChevronRight size={16} /></button> : <button className="primary-button" type="button" onClick={onSubmit}>Finish exam <Check size={16} /></button>}</div></section></main>
       </div>
     </div>
   );
@@ -966,16 +1087,21 @@ function ResultsView({ details, settings, exam, onRetake, onRetakeWrong, onDashb
   const timeUsed = exam ? Math.max(0, Math.round(((exam.submittedAt ?? Date.now()) - exam.startedAt) / 1000)) : 0;
   return (
     <div className="results-page">
+      {pass && <div className="confetti" aria-hidden="true">{Array.from({ length: 20 }, (_, index) => <i key={index} style={{ "--i": index } as React.CSSProperties} />)}</div>}
       <div className="results-wrap"><section className="results-hero"><div className="score-ring" style={{ "--score": `${percent}%` } as React.CSSProperties}><div className="score-value"><strong>{percent}%</strong><small>FINAL SCORE</small></div></div><div className="results-copy"><span className="pill"><Sparkles size={14} /> {pass ? "TARGET REACHED" : "KEEP PRACTICING"}</span><h1>{pass ? "Great work!" : "You’re making progress."}</h1><p>{pass ? "You passed this mock exam. Review anything you missed to make the next attempt stronger." : "Review the correct answers and explanations below, then retake the questions you missed."}</p><div className="result-stats"><div><strong>{correct}/{total}</strong><small>Correct answers</small></div><div><strong>{formatDuration(timeUsed)}</strong><small>Time used</small></div><div><strong>{wrong.length}</strong><small>Need review</small></div></div><div className="results-actions"><button className="white-button" type="button" onClick={onRetake}>Retake exam</button>{wrong.length > 0 && <button className="outline-light" type="button" onClick={onRetakeWrong}>Retake incorrect</button>}<button className="outline-light" type="button" onClick={onDashboard}>Dashboard</button></div></div></section>
         <section className="review-section"><div className="section-heading"><div><p className="eyebrow">ANSWER REVIEW</p><h2>Learn from every question</h2></div></div>{details.map((detail, index) => {
-          const selected = detail.question.options.find((option) => option.id === detail.selectedOptionId);
-          const correctOption = detail.question.options.find((option) => option.id === detail.question.correctOptionId);
-          return <article className={`review-card ${detail.correct ? "correct-review" : "wrong-review"}`} key={detail.question.id}><div className="review-head"><span className={`review-badge ${detail.correct ? "" : "wrong"}`}>{detail.correct ? <Check size={18} /> : <X size={18} />}</span><div><h3>{index + 1}. {detail.question.question}</h3><p>{detail.correct ? "Correct answer" : selected ? `Your answer: ${selected.text}` : "No answer selected"}</p></div></div>{!detail.correct && <div className="correct-answer-callout"><strong>Correct answer</strong><span>{correctOption?.text ?? "Unavailable"}</span></div>}{settings.showExplanations && detail.question.explanation && <div className="review-explanation"><Sparkles size={16} /><span>{detail.question.explanation}</span></div>}</article>;
+          const selectedOptions = detail.question.options.filter((option) => detail.selectedOptionIds.includes(option.id));
+          const correctIds = getCorrectIds(detail.question);
+          const correctOptions = detail.question.options.filter((option) => correctIds.includes(option.id));
+          const selectedText = selectedOptions.map((option) => option.text).join(" • ");
+          const correctText = correctOptions.map((option) => option.text).join(" • ");
+          return <article className={`review-card ${detail.correct ? "correct-review" : "wrong-review"}`} key={detail.question.id}><div className="review-head"><span className={`review-badge ${detail.correct ? "" : "wrong"}`}>{detail.correct ? <Check size={18} /> : <X size={18} />}</span><div><h3>{index + 1}. {detail.question.question}</h3><p>{detail.correct ? "Correct answer" : selectedText ? `Your answer: ${selectedText}` : "No answer selected"}</p></div></div>{!detail.correct && <div className="correct-answer-callout"><strong>Correct answer{correctOptions.length > 1 ? "s" : ""}</strong><span>{correctText || "Unavailable"}</span></div>}{settings.showExplanations && detail.question.explanation && <div className="review-explanation"><Sparkles size={16} /><span>{detail.question.explanation}</span></div>}</article>;
         })}</section>
       </div>
     </div>
   );
 }
+
 
 function delay(milliseconds: number) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));

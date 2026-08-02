@@ -1,10 +1,10 @@
-# Update the deployed Vercel site to QuizForge v2.7
+# Update the deployed Vercel site to QuizForge v2.8
 
-1. Extract `quizforge-vercel-update-v2.7.zip`.
+1. Extract `quizforge-vercel-update-v2.8.zip`.
 2. Open the existing `quizforge-react` GitHub repository.
 3. Choose **Add file → Upload files**.
 4. Upload everything from inside the extracted update folder.
-5. Commit with `Update QuizForge to v2.7`.
+5. Commit with `Update QuizForge to v2.8`.
 6. Wait for Vercel to redeploy.
 7. Refresh the live site with `Ctrl + Shift + R`.
 

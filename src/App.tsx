@@ -5,6 +5,7 @@ import {
   BarChart3,
   BookOpen,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   CheckCircle2,
@@ -177,6 +178,16 @@ function isMultipleQuestion(question: Question): boolean {
   return question.selectionMode === "multiple" || getCorrectIds(question).length > 1 || /\bchoose\s+(?:two|three|four|five|six|seven|eight|[2-8])\b/i.test(question.question);
 }
 
+function lifelinesAreEnabled(settings: ExamSettings): boolean {
+  if (typeof settings.lifelinesEnabled === "boolean") return settings.lifelinesEnabled;
+  return Boolean(
+    settings.lifelineFiftyFifty
+    || settings.lifelineAudiencePoll
+    || settings.lifelineTimeFreeze
+    || settings.lifelineClue
+  );
+}
+
 function sameAnswerSet(left: string[], right: string[]): boolean {
   if (left.length !== right.length) return false;
   const expected = new Set(right);
@@ -204,6 +215,7 @@ const defaultSettings: ExamSettings = {
   showExplanations: true,
   topicFilter: "All topics",
   weakAreasOnly: false,
+  lifelinesEnabled: true,
   lifelineFiftyFifty: true,
   lifelineAudiencePoll: true,
   lifelineTimeFreeze: true,
@@ -954,7 +966,7 @@ function App() {
   }
 
   function useFiftyFifty() {
-    if (!exam || !settings.lifelineFiftyFifty) return;
+    if (!exam || !lifelinesAreEnabled(settings)) return;
     const question = exam.questions[exam.currentIndex];
     const lifelines = exam.lifelines;
     if (lifelines?.fiftyFiftyUsed) {
@@ -994,7 +1006,7 @@ function App() {
   }
 
   function useAudiencePoll() {
-    if (!exam || !settings.lifelineAudiencePoll) return;
+    if (!exam || !lifelinesAreEnabled(settings)) return;
     const question = exam.questions[exam.currentIndex];
     const lifelines = exam.lifelines;
     if (lifelines?.audiencePollUsed) {
@@ -1041,7 +1053,7 @@ function App() {
   }
 
   function useTimeFreeze() {
-    if (!exam || !settings.lifelineTimeFreeze) return;
+    if (!exam || !lifelinesAreEnabled(settings)) return;
     if (!settings.timed) {
       setToast("Time Freeze is available only in timed exams");
       return;
@@ -1068,7 +1080,7 @@ function App() {
   }
 
   function useClue() {
-    if (!exam || !settings.lifelineClue) return;
+    if (!exam || !lifelinesAreEnabled(settings)) return;
     const question = exam.questions[exam.currentIndex];
     const lifelines = exam.lifelines;
     if (lifelines?.clueUsed) {
@@ -1092,6 +1104,16 @@ function App() {
       }
     });
     setToast("Clue revealed");
+  }
+
+  function leaveExamToDashboard() {
+    if (exam && activeSetId) {
+      saveExamRecovery({ activeSetId, exam, settings, savedAt: new Date().toISOString() });
+      setRecoveryAvailable(true);
+    }
+    setSubmitReviewOpen(false);
+    setToast("Exam saved — resume it anytime from Home");
+    navigate("dashboard");
   }
 
   function requestExamSubmit() {
@@ -1157,6 +1179,7 @@ function App() {
           onAudiencePoll={useAudiencePoll}
           onTimeFreeze={useTimeFreeze}
           onClue={useClue}
+          onExit={leaveExamToDashboard}
         />
       ) : view === "results" ? (
         <ResultsView
@@ -1961,15 +1984,21 @@ function SetupView({ studySet, settings, onSettings, onBack, onStart }: { studyS
           <ToggleSetting label="Timed exam" description="Show a countdown while answering." checked={settings.timed} onChange={(value) => update("timed", value)} />
           <div className={`setting-row ${!settings.timed ? "disabled-setting" : ""}`}><div className="setting-copy"><strong>Time limit</strong><small>Select the exam duration.</small></div><select disabled={!settings.timed} value={settings.minutes} onChange={(event) => update("minutes", Number(event.target.value))}>{[5, 10, 20, 30, 45, 60, 90].map((value) => <option value={value} key={value}>{value} minutes</option>)}</select></div>
           {hasExplanations && <ToggleSetting label="Show explanations" description="Display available explanations in the answer review." checked={settings.showExplanations} onChange={(value) => update("showExplanations", value)} />}
-          <section className="lifeline-settings">
-            <div className="lifeline-settings-head"><span><ShieldCheck size={18} /></span><div><strong>Practice lifelines</strong><small>Turn each aid on or off for this attempt. Every enabled lifeline can be used once.</small></div></div>
-            <div className="lifeline-toggle-grid">
-              <LifelineToggle icon={<Scissors size={17} />} label="50:50" description="Remove incorrect choices until two remain." checked={Boolean(settings.lifelineFiftyFifty)} onChange={(value) => update("lifelineFiftyFifty", value)} />
-              <LifelineToggle icon={<Users size={17} />} label="Audience Poll" description="Show a simulated vote for the current question." checked={Boolean(settings.lifelineAudiencePoll)} onChange={(value) => update("lifelineAudiencePoll", value)} />
-              <LifelineToggle icon={<Snowflake size={17} />} label="Time Freeze" description="Pause a timed exam for 60 seconds." checked={Boolean(settings.lifelineTimeFreeze)} onChange={(value) => update("lifelineTimeFreeze", value)} disabled={!settings.timed} />
-              <LifelineToggle icon={<Lightbulb size={17} />} label="Clue" description="Reveal the saved explanation or a source-page hint." checked={Boolean(settings.lifelineClue)} onChange={(value) => update("lifelineClue", value)} />
-            </div>
-          </section>
+          <div className="lifeline-master-setting">
+            <ToggleSetting
+              label="Practice lifelines"
+              description="Enable 50:50, Audience Poll, Time Freeze, and Clue. Each aid can be used once."
+              checked={lifelinesAreEnabled(settings)}
+              onChange={(value) => onSettings({
+                ...settings,
+                lifelinesEnabled: value,
+                lifelineFiftyFifty: value,
+                lifelineAudiencePoll: value,
+                lifelineTimeFreeze: value,
+                lifelineClue: value
+              })}
+            />
+          </div>
         </section>
         <aside className="preview-panel"><div className="preview-header"><span className="pill"><Target size={13} /> EXAM PREVIEW</span><h2>{studySet.title}</h2><p>{settings.weakAreasOnly && weak.length ? `Weak-area mode: ${weak.join(", ")}` : settings.topicFilter && settings.topicFilter !== "All topics" ? settings.topicFilter : "Mixed-topic practice"}</p></div>{preview && <div className="exam-preview-card"><span>{isMultipleQuestion(preview) ? "MULTIPLE ANSWERS" : "QUESTION 01"}</span><h3>{preview.question}</h3>{preview.options.slice(0, 3).map((option, index) => <div className="mini-answer" key={option.id}><span>{String.fromCharCode(65 + index)}</span>{option.text}</div>)}</div>}<div className="exam-details"><div><strong>{Math.min(settings.questionCount, filtered.length)}</strong><small>Questions</small></div><div><strong>{settings.timed ? `${settings.minutes}m` : "∞"}</strong><small>Time limit</small></div><div><strong>{filtered.length ? new Set(filtered.map((q) => q.topic ?? "General")).size : 0}</strong><small>Topics</small></div></div><button className="primary-button start-button" type="button" disabled={!filtered.length} onClick={onStart}>Start mock exam <ChevronRight size={17} /></button></aside>
       </div>
@@ -1980,11 +2009,6 @@ function SetupView({ studySet, settings, onSettings, onBack, onStart }: { studyS
 function ToggleSetting({ label, description, checked, onChange }: { label: string; description: string; checked: boolean; onChange: (checked: boolean) => void }) {
   return <label className="setting-row"><div className="setting-copy"><strong>{label}</strong><small>{description}</small></div><input className="switch-input" type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /></label>;
 }
-
-function LifelineToggle({ icon, label, description, checked, onChange, disabled = false }: { icon: React.ReactNode; label: string; description: string; checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean }) {
-  return <label className={`lifeline-toggle-card ${checked ? "enabled" : ""} ${disabled ? "disabled" : ""}`}><span className="lifeline-toggle-icon">{icon}</span><span className="lifeline-toggle-copy"><strong>{label}</strong><small>{description}</small></span><input className="switch-input" type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} /></label>;
-}
-
 
 function ExamView({
   exam,
@@ -1999,7 +2023,8 @@ function ExamView({
   onFiftyFifty,
   onAudiencePoll,
   onTimeFreeze,
-  onClue
+  onClue,
+  onExit
 }: {
   exam: ExamSession | null;
   settings: ExamSettings;
@@ -2014,9 +2039,14 @@ function ExamView({
   onAudiencePoll: () => void;
   onTimeFreeze: () => void;
   onClue: () => void;
+  onExit: () => void;
 }) {
   const [navFilter, setNavFilter] = useState<"all" | "unanswered" | "flagged" | "incomplete">("all");
   const [navOpen, setNavOpen] = useState(false);
+  const [lifelineMenuOpen, setLifelineMenuOpen] = useState(false);
+  useEffect(() => {
+    setLifelineMenuOpen(false);
+  }, [exam?.currentIndex]);
   if (!exam) return null;
   const question = exam.questions[exam.currentIndex];
   const selected = exam.responses[question.id] ?? [];
@@ -2054,12 +2084,14 @@ function ExamView({
   const multiple = isMultipleQuestion(question);
   const expectedSelections = Math.max(2, getCorrectIds(question).length);
   const progressPercent = Math.round((counts.answered / Math.max(1, exam.questions.length)) * 100);
-  const lifelinesEnabled = Boolean(
-    settings.lifelineFiftyFifty
-    || settings.lifelineAudiencePoll
-    || settings.lifelineTimeFreeze
-    || settings.lifelineClue
-  );
+  const lifelinesEnabled = lifelinesAreEnabled(settings);
+  const totalLifelines = settings.timed ? 4 : 3;
+  const remainingLifelines = [
+    !lifelines.fiftyFiftyUsed,
+    !lifelines.audiencePollUsed,
+    ...(settings.timed ? [!lifelines.timeFreezeUsed] : []),
+    !lifelines.clueUsed
+  ].filter(Boolean).length;
 
   function moveFromNavigator(index: number) {
     onMove(index);
@@ -2069,7 +2101,10 @@ function ExamView({
   return (
     <div className="exam-shell streamlined-exam-shell">
       <header className="exam-topbar">
-        <div className="exam-brand"><span className="brand-mark">Q</span><span><strong>QuizForge Exam</strong><small>{question.topic ?? "Practice mode"}</small></span></div>
+        <div className="exam-topbar-left">
+          <div className="exam-brand"><span className="brand-mark">Q</span><span><strong>QuizForge Exam</strong><small>{question.topic ?? "Practice mode"}</small></span></div>
+          <button className="exam-home-button" type="button" onClick={onExit} title="Save exam and return home"><Home size={16} /><span>Save & Home</span></button>
+        </div>
         <button className="exam-nav-trigger" type="button" onClick={() => setNavOpen(true)}><Menu size={17} /> Questions</button>
         <div className="exam-meta">
           <div className="autosave-status"><CheckCircle2 size={15} /><span>Saved</span></div>
@@ -2100,15 +2135,34 @@ function ExamView({
             <h1>{question.question}</h1>
 
             {lifelinesEnabled && (
-              <section className="lifeline-bar" aria-label="Exam lifelines">
-                <div className="lifeline-bar-title"><ShieldCheck size={16} /><span><strong>Lifelines</strong><small>Each can be used once</small></span></div>
-                <div className="lifeline-actions">
-                  {settings.lifelineFiftyFifty && <button className={`lifeline-button ${lifelines.fiftyFiftyUsed ? "used" : ""}`} type="button" disabled={lifelines.fiftyFiftyUsed || multiple || question.options.length <= 2} onClick={onFiftyFifty}><Scissors size={16} /><span>50:50</span></button>}
-                  {settings.lifelineAudiencePoll && <button className={`lifeline-button ${lifelines.audiencePollUsed ? "used" : ""}`} type="button" disabled={lifelines.audiencePollUsed || multiple} onClick={onAudiencePoll}><Users size={16} /><span>Audience</span></button>}
-                  {settings.lifelineTimeFreeze && <button className={`lifeline-button ${lifelines.timeFreezeUsed ? "used" : ""} ${freezeSeconds > 0 ? "active" : ""}`} type="button" disabled={lifelines.timeFreezeUsed || !settings.timed} onClick={onTimeFreeze}><Snowflake size={16} /><span>{freezeSeconds > 0 ? `${freezeSeconds}s` : "Freeze"}</span></button>}
-                  {settings.lifelineClue && <button className={`lifeline-button ${lifelines.clueUsed ? "used" : ""}`} type="button" disabled={lifelines.clueUsed} onClick={onClue}><Lightbulb size={16} /><span>Clue</span></button>}
-                </div>
-              </section>
+              <div className="lifeline-menu-wrap">
+                <button
+                  className={`lifeline-menu-trigger ${lifelineMenuOpen ? "open" : ""}`}
+                  type="button"
+                  aria-expanded={lifelineMenuOpen}
+                  onClick={() => setLifelineMenuOpen((current) => !current)}
+                >
+                  <span className="lifeline-trigger-icon"><ShieldCheck size={17} /></span>
+                  <span><strong>Lifelines</strong><small>{remainingLifelines} of {totalLifelines} available</small></span>
+                  <ChevronDown size={16} />
+                </button>
+                {lifelineMenuOpen && (
+                  <div className="lifeline-menu" role="menu" aria-label="Exam lifelines">
+                    <button role="menuitem" className={lifelines.fiftyFiftyUsed ? "used" : ""} type="button" disabled={lifelines.fiftyFiftyUsed || multiple || question.options.length <= 2} onClick={() => { onFiftyFifty(); setLifelineMenuOpen(false); }}>
+                      <span><Scissors size={17} /></span><div><strong>50:50</strong><small>Remove two incorrect choices</small></div><em>{lifelines.fiftyFiftyUsed ? "Used" : multiple ? "Single-answer only" : "Use"}</em>
+                    </button>
+                    <button role="menuitem" className={lifelines.audiencePollUsed ? "used" : ""} type="button" disabled={lifelines.audiencePollUsed || multiple} onClick={() => { onAudiencePoll(); setLifelineMenuOpen(false); }}>
+                      <span><Users size={17} /></span><div><strong>Audience Poll</strong><small>See a simulated vote</small></div><em>{lifelines.audiencePollUsed ? "Used" : multiple ? "Single-answer only" : "Use"}</em>
+                    </button>
+                    <button role="menuitem" className={`${lifelines.timeFreezeUsed ? "used" : ""} ${freezeSeconds > 0 ? "active" : ""}`} type="button" disabled={lifelines.timeFreezeUsed || !settings.timed} onClick={() => { onTimeFreeze(); setLifelineMenuOpen(false); }}>
+                      <span><Snowflake size={17} /></span><div><strong>Time Freeze</strong><small>Pause the timer for 60 seconds</small></div><em>{freezeSeconds > 0 ? `${freezeSeconds}s` : lifelines.timeFreezeUsed ? "Used" : !settings.timed ? "Timed exams only" : "Use"}</em>
+                    </button>
+                    <button role="menuitem" className={lifelines.clueUsed ? "used" : ""} type="button" disabled={lifelines.clueUsed} onClick={() => { onClue(); setLifelineMenuOpen(false); }}>
+                      <span><Lightbulb size={17} /></span><div><strong>Clue</strong><small>Reveal a useful hint</small></div><em>{lifelines.clueUsed ? "Used" : "Use"}</em>
+                    </button>
+                  </div>
+                )}
+              </div>
             )}
 
             {clue && <div className="lifeline-clue"><Lightbulb size={18} /><div><strong>Your clue</strong><p>{clue}</p></div></div>}

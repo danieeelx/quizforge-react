@@ -1,4 +1,4 @@
-# QuizForge React v2.7
+# QuizForge React v2.8
 
 QuizForge turns text-based PDF question banks and manually entered questions into editable mock exams. It uses React and TypeScript in the browser, PDF.js for local PDF text extraction, browser storage for saved study sets, and an optional server-side OpenAI import assistant.
 
@@ -10,8 +10,8 @@ QuizForge turns text-based PDF question banks and manually entered questions int
 - Import validation and editable answer keys
 - Single-answer and multiple-answer questions
 - Timed and untimed exams
-- Optional 50:50, Audience Poll, Time Freeze, and Clue lifelines
-- Question flags, final review, scoring, weak-topic practice, and recovery
+- One master lifeline toggle with a compact in-exam menu for 50:50, Audience Poll, Time Freeze, and Clue
+- Save-and-exit navigation, question flags, final review, scoring, weak-topic practice, and recovery
 - Light and dark mode
 
 ## Run locally

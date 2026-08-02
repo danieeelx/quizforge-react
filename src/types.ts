@@ -64,6 +64,8 @@ export interface ExamSettings {
   showExplanations: boolean;
   topicFilter?: string;
   weakAreasOnly?: boolean;
+  /** Master switch for all practice lifelines. Legacy per-lifeline fields remain for saved-setting compatibility. */
+  lifelinesEnabled?: boolean;
   lifelineFiftyFifty?: boolean;
   lifelineAudiencePoll?: boolean;
   lifelineTimeFreeze?: boolean;

@@ -22,3 +22,7 @@ In Vercel:
 6. Redeploy the latest deployment.
 
 The AI switch appears only after `/api/health` confirms that the server-side key is configured.
+
+
+## v3.0
+Upload all contents of the v3.0 update folder to the repository root, commit, wait for Vercel, then hard-refresh with Ctrl+Shift+R.

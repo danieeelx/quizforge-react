@@ -54,3 +54,11 @@ Then add `OPENAI_API_KEY` in Vercel Project Settings → Environment Variables a
 - Scanned-image PDF OCR is not bundled in this version.
 - AI can make mistakes. Low-confidence or unsupported answers remain marked for manual review.
 - AI requests use the API account connected to your server key and may incur usage charges.
+
+## v3.0 interface update
+
+- Uses the Oxanium gaming-style typeface with uppercase UI text.
+- Uses one consistently centered custom dropdown chevron across the app.
+- Removes highlighted styling from Lifelines controls.
+- Adds Select all and Deselect all controls for large manual question sets.
+- Improves alignment in the review editor and exam setup.

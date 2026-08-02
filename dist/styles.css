@@ -1201,3 +1201,172 @@ small,
     grid-row:1;
   }
 }
+
+/* QuizForge v3.0 — gamer typography, aligned controls, neutral lifelines, and select-all */
+:root{
+  --minimal-font:"Oxanium","Segoe UI Variable Text","Aptos","Inter",sans-serif;
+}
+
+/* One consistent custom arrow removes browser-specific select misalignment. */
+select{
+  -webkit-appearance:none!important;
+  appearance:none!important;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23a8a5b8' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E")!important;
+  background-repeat:no-repeat!important;
+  background-position:right 14px center!important;
+  background-size:15px 15px!important;
+  padding-right:44px!important;
+  line-height:1.2!important;
+}
+select::-ms-expand{display:none}
+select:disabled{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236c6978' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m7 10 5 5 5-5'/%3E%3C/svg%3E")!important}
+.setting-row select,
+.bulk-editor-toolbar select,
+.editor-meta-grid select.text-input,
+.answer-mode-select{
+  min-height:50px;
+  display:block;
+  box-sizing:border-box;
+}
+.editor-meta-grid .text-input{
+  min-height:52px;
+  height:52px;
+}
+.editor-meta-grid .form-group{
+  display:flex;
+  flex-direction:column;
+  justify-content:flex-end;
+  gap:8px;
+}
+.editor-meta-grid .form-group>label{
+  margin:0;
+  line-height:1;
+}
+
+/* Keep all icon-and-label buttons optically centered. */
+button>svg,
+.primary-button>svg,
+.secondary-button>svg,
+.ghost-button>svg,
+.breadcrumb-button>svg{
+  display:block;
+  flex:0 0 auto;
+  align-self:center;
+  margin-block:0;
+}
+
+/* Lifelines should look exactly like the other preference rows. */
+.lifeline-master-setting{
+  margin:0!important;
+}
+.lifeline-master-setting .setting-row{
+  margin:0!important;
+  padding:17px 0!important;
+  border:0!important;
+  border-radius:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+}
+.lifeline-master-setting .setting-copy strong{
+  font-weight:600!important;
+}
+
+/* The in-exam Lifelines control stays neutral, even while its menu is open. */
+.lifeline-menu-trigger,
+.lifeline-menu-trigger:hover,
+.lifeline-menu-trigger.open{
+  border-color:var(--line)!important;
+  background:var(--surface-soft)!important;
+  box-shadow:none!important;
+  transform:none!important;
+}
+.lifeline-menu-trigger:hover{
+  border-color:color-mix(in srgb,var(--text) 20%,var(--line))!important;
+}
+.lifeline-trigger-icon,
+.lifeline-menu-trigger.open .lifeline-trigger-icon{
+  border:1px solid var(--line)!important;
+  background:var(--surface-solid)!important;
+  color:var(--muted)!important;
+}
+.lifeline-menu-trigger.open>svg{
+  color:var(--text);
+}
+
+/* Clear selection control for large manually-created sets. */
+.sidebar-select-all{
+  width:100%;
+  display:grid;
+  grid-template-columns:30px minmax(0,1fr);
+  align-items:center;
+  gap:10px;
+  margin:0 0 10px;
+  padding:10px 11px;
+  border:1px solid var(--line);
+  border-radius:13px;
+  background:var(--surface-soft);
+  color:var(--text);
+  text-align:left;
+  transition:.16s ease;
+}
+.sidebar-select-all:hover{
+  border-color:color-mix(in srgb,var(--primary) 36%,var(--line));
+}
+.sidebar-select-all.active{
+  border-color:var(--primary);
+  background:var(--primary-soft);
+}
+.sidebar-select-all-icon{
+  display:grid;
+  place-items:center;
+  width:28px;
+  height:28px;
+  border:1px solid var(--line);
+  border-radius:8px;
+  background:var(--surface-solid);
+  color:var(--primary);
+}
+.sidebar-select-all.active .sidebar-select-all-icon{
+  border-color:var(--primary);
+}
+.sidebar-select-all strong,
+.sidebar-select-all small{
+  display:block;
+}
+.sidebar-select-all strong{
+  font-size:10px;
+  line-height:1.35;
+}
+.sidebar-select-all small{
+  margin-top:2px;
+  color:var(--muted);
+  font-size:8px;
+}
+.select-all-toolbar-button{
+  min-width:160px;
+  white-space:nowrap;
+}
+
+/* Improve the editor header and field alignment at wide and narrow sizes. */
+.editor-card-head{
+  align-items:flex-start;
+}
+.editor-status-line{
+  min-height:28px;
+  align-items:center;
+  flex-wrap:wrap;
+}
+.question-editor-card .editor-actions{
+  align-items:center;
+}
+
+@media(max-width:760px){
+  select{
+    background-position:right 12px center!important;
+    padding-right:40px!important;
+  }
+  .select-all-toolbar-button{
+    min-width:0;
+    width:100%;
+  }
+}

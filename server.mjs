@@ -180,7 +180,7 @@ async function serveStatic(requestPath, request, response) {
     "Cache-Control": extension === ".html" ? "no-cache" : "public, max-age=31536000, immutable",
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "same-origin",
-    "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' https://esm.sh https://cdn.jsdelivr.net; connect-src 'self' https://esm.sh https://cdn.jsdelivr.net; worker-src 'self' blob: https://cdn.jsdelivr.net; font-src 'self' data:; base-uri 'self'; frame-ancestors 'none'"
+    "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; script-src 'self' 'unsafe-inline' https://esm.sh https://cdn.jsdelivr.net; connect-src 'self' https://esm.sh https://cdn.jsdelivr.net https://fonts.googleapis.com https://fonts.gstatic.com; worker-src 'self' blob: https://cdn.jsdelivr.net; font-src 'self' data: https://fonts.gstatic.com; base-uri 'self'; frame-ancestors 'none'"
   });
   if (request.method === "HEAD") return response.end();
   response.end(data);

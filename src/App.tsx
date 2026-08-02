@@ -1907,7 +1907,7 @@ function EditorView({ studySet, question, onSelect, onUpdateQuestion, onUpdateOp
         <label className="search-box bulk-search"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search question text or topic" /></label>
         <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as "all" | "verified" | "review")} aria-label="Filter by status"><option value="all">All statuses</option><option value="verified">Verified</option><option value="review">Needs review</option></select>
         <select value={topicFilter} onChange={(event) => setTopicFilter(event.target.value)} aria-label="Filter by topic"><option>All topics</option>{topics.map((topic) => <option key={topic}>{topic}</option>)}</select>
-        <button className="secondary-button compact" type="button" onClick={toggleAllVisible}>{allVisibleSelected ? "Clear visible" : "Select visible"}</button>
+        <button className="secondary-button compact select-all-toolbar-button" type="button" onClick={toggleAllVisible}>{allVisibleSelected ? `Deselect all (${filteredQuestions.length})` : `Select all (${filteredQuestions.length})`}</button>
       </section>
 
       {selectedIds.length > 0 && (
@@ -1924,6 +1924,10 @@ function EditorView({ studySet, question, onSelect, onUpdateQuestion, onUpdateOp
       <div className="editor-layout">
         <aside className="editor-sidebar">
           <div className="set-summary"><div className="set-file-icon"><FileText size={21} /></div><strong>{studySet.title}</strong><span>{studySet.sourceName}</span><div className="summary-grid"><div><strong>{studySet.questions.length}</strong><small>Questions</small></div><div><strong>{verified}</strong><small>Verified</small></div><div><strong>{studySet.questions.length - verified}</strong><small>Review</small></div></div></div>
+          <button className={`sidebar-select-all ${allVisibleSelected ? "active" : ""}`} type="button" onClick={toggleAllVisible}>
+            <span className="sidebar-select-all-icon">{allVisibleSelected ? <Check size={15} /> : null}</span>
+            <span><strong>{allVisibleSelected ? "Deselect all questions" : `Select all ${filteredQuestions.length} questions`}</strong><small>{selectedIds.length} currently selected</small></span>
+          </button>
           <div className="question-list filtered-list">
             {filteredQuestions.map((item) => {
               const itemIndex = studySet.questions.indexOf(item);

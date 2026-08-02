@@ -1,5 +1,11 @@
 export type QuestionStatus = "verified" | "review";
 export type SelectionMode = "single" | "multiple";
+export type ConfidenceLevel = "confident" | "unsure" | "guessed";
+
+export interface SourcePage {
+  page: number;
+  text: string;
+}
 
 export interface AnswerOption {
   id: string;
@@ -29,6 +35,8 @@ export interface AttemptQuestionResult {
   questionId: string;
   topic: string;
   correct: boolean;
+  confidence?: ConfidenceLevel;
+  flagged?: boolean;
 }
 
 export interface Attempt {
@@ -49,6 +57,8 @@ export interface StudySet {
   updatedAt: string;
   questions: Question[];
   attempts: Attempt[];
+  /** Extracted text grouped by original PDF page for source review. */
+  sourcePages?: SourcePage[];
 }
 
 export interface ExamQuestion extends Omit<Question, "options"> {
@@ -91,6 +101,7 @@ export interface ExamSession {
   questions: ExamQuestion[];
   responses: Record<string, string[]>;
   flagged: Record<string, boolean>;
+  confidence: Record<string, ConfidenceLevel>;
   currentIndex: number;
   startedAt: number;
   remainingSeconds: number;

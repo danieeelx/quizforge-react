@@ -26,3 +26,18 @@ The AI switch appears only after `/api/health` confirms that the server-side key
 
 ## v3.0
 Upload all contents of the v3.0 update folder to the repository root, commit, wait for Vercel, then hard-refresh with Ctrl+Shift+R.
+
+## v3.0.1
+
+Upload the contents of the v3.0.1 update folder to the repository root. The important live-site replacement is `dist/App.js`.
+
+
+## v3.1
+
+1. Extract `quizforge-vercel-update-v3.1.zip`.
+2. Upload everything inside the extracted folder to the repository root.
+3. Commit with `Update QuizForge to v3.1`.
+4. Wait for Vercel to redeploy.
+5. Refresh with `Ctrl + Shift + R`.
+
+No Vercel setting changes are required. Existing browser data is preserved. Source-page viewing becomes available for PDFs imported after v3.1.

@@ -12,11 +12,16 @@ import {
   CircleHelp,
   Clock3,
   Copy,
+  Download,
+  Eye,
+  FileJson,
+  FileSpreadsheet,
   FileText,
   Filter,
   Flag,
   FolderOpen,
   Home,
+  Keyboard,
   Layers3,
   Library,
   ListFilter,
@@ -24,6 +29,7 @@ import {
   Moon,
   Plus,
   RotateCcw,
+  Save,
   Search,
   Settings2,
   Sparkles,
@@ -39,9 +45,10 @@ import {
   Trash2,
   Upload,
   WandSparkles,
+  WifiOff,
   X
 } from "lucide-react";
-import type { ExamQuestion, ExamSession, ExamSettings, Question, StudySet, UploadDraft } from "./types.js";
+import type { ConfidenceLevel, ExamQuestion, ExamSession, ExamSettings, Question, SourcePage, StudySet, UploadDraft } from "./types.js";
 import { extractPdfText } from "./lib/pdf.js";
 import { generateLocalQuestions, parseQuestionBankDetailed } from "./lib/parser.js";
 import { clearExamRecovery, clearUploadDraft, loadExamRecovery, loadStudySets, loadTheme, loadUploadDraft, saveExamRecovery, saveStudySets, saveTheme, saveUploadDraft } from "./lib/storage.js";
@@ -57,6 +64,8 @@ interface ResultDetail {
   question: ExamQuestion;
   selectedOptionIds: string[];
   correct: boolean;
+  confidence: ConfidenceLevel | null;
+  flagged: boolean;
 }
 
 
@@ -85,6 +94,34 @@ interface PendingImport {
   parserWarnings: string[];
   selectedIds: string[];
   issues: ValidationIssue[];
+  sourcePages: SourcePage[];
+}
+
+type AutosaveState = "saving" | "saved" | "offline";
+
+function extractSourcePages(rawText: string): SourcePage[] {
+  const matches = [...rawText.matchAll(/\[\[PAGE\s+(\d+)\]\]\s*([\s\S]*?)(?=\n\s*\[\[PAGE\s+\d+\]\]|$)/gi)];
+  return matches.map((match) => ({
+    page: Number(match[1]),
+    text: match[2].replace(/\[\[CORRECT\]\]\s*/gi, "").trim()
+  })).filter((page) => page.page > 0 && page.text.length > 0);
+}
+
+function downloadTextFile(filename: string, content: string, type = "application/json"): void {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+function csvCell(value: unknown): string {
+  const text = String(value ?? "");
+  return `"${text.replace(/"/g, '""')}"`;
 }
 
 function createPasteAnswer(text = "", correct = false): PasteAnswerDraft {
@@ -251,6 +288,10 @@ function App() {
   const [recoveryAvailable, setRecoveryAvailable] = useState(Boolean(initialExamRecovery));
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
+  const [autosaveState, setAutosaveState] = useState<AutosaveState>(() => navigator.onLine ? "saved" : "offline");
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+  const autosaveTimerRef = useRef<number | null>(null);
+  const examAutosaveSignatureRef = useRef("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const activeSet = useMemo(
@@ -263,6 +304,31 @@ function App() {
     [activeSet, editingQuestionId]
   );
 
+  function registerAutosave(): void {
+    if (!navigator.onLine) {
+      setAutosaveState("offline");
+      setLastSavedAt(new Date());
+      return;
+    }
+    setAutosaveState("saving");
+    if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current);
+    autosaveTimerRef.current = window.setTimeout(() => {
+      setAutosaveState("saved");
+      setLastSavedAt(new Date());
+    }, 420);
+  }
+
+  useEffect(() => {
+    const updateConnectivity = () => setAutosaveState(navigator.onLine ? "saved" : "offline");
+    window.addEventListener("online", updateConnectivity);
+    window.addEventListener("offline", updateConnectivity);
+    return () => {
+      window.removeEventListener("online", updateConnectivity);
+      window.removeEventListener("offline", updateConnectivity);
+      if (autosaveTimerRef.current) window.clearTimeout(autosaveTimerRef.current);
+    };
+  }, []);
+
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     saveTheme(theme);
@@ -270,6 +336,7 @@ function App() {
 
   useEffect(() => {
     saveStudySets(studySets);
+    registerAutosave();
   }, [studySets]);
 
   useEffect(() => {
@@ -283,12 +350,18 @@ function App() {
       savedAt: new Date().toISOString(),
       fileName: selectedFile?.name ?? initialUploadDraft?.fileName
     });
+    registerAutosave();
   }, [studyTitle, pasteSections, aiEnhanced, ocrEnabled, selectedFile]);
 
   useEffect(() => {
     if (view === "exam" && exam && activeSetId) {
       saveExamRecovery({ activeSetId, exam, settings, savedAt: new Date().toISOString() });
       setRecoveryAvailable(true);
+      const signature = JSON.stringify({ responses: exam.responses, flagged: exam.flagged, confidence: exam.confidence, currentIndex: exam.currentIndex, lifelines: exam.lifelines });
+      if (signature !== examAutosaveSignatureRef.current) {
+        examAutosaveSignatureRef.current = signature;
+        registerAutosave();
+      }
     }
   }, [view, exam, activeSetId, settings]);
 
@@ -375,7 +448,7 @@ function App() {
     setEditingQuestionId(set.questions[0]?.id ?? null);
     setSettings(recovery.settings);
     const elapsedWhileAway = recovery.settings.timed ? Math.max(0, Math.floor((Date.now() - new Date(recovery.savedAt).getTime()) / 1000)) : 0;
-    setExam({ ...recovery.exam, remainingSeconds: recovery.settings.timed ? Math.max(0, recovery.exam.remainingSeconds - elapsedWhileAway) : recovery.exam.remainingSeconds });
+    setExam({ ...recovery.exam, confidence: recovery.exam.confidence ?? {}, remainingSeconds: recovery.settings.timed ? Math.max(0, recovery.exam.remainingSeconds - elapsedWhileAway) : recovery.exam.remainingSeconds });
     setSubmitReviewOpen(false);
     navigate("exam");
   }
@@ -418,6 +491,7 @@ function App() {
       const parsedImports: ReturnType<typeof parseQuestionBankDetailed>[] = [];
       const sourceParts: string[] = [];
       const importedQuestions: Question[] = [];
+      const sourcePages: SourcePage[] = [];
       let sourceName = populatedSections.length > 1
         ? `${populatedSections.length} manually added questions`
         : "Manually added question";
@@ -432,6 +506,7 @@ function App() {
           throw new Error("This PDF has little or no selectable text. Scanned-PDF OCR is not enabled yet, so try a text-based PDF or add the questions manually.");
         }
         sourceParts.push(extractedText);
+        sourcePages.push(...extractSourcePages(extractedText));
         const parsedFile = parseQuestionBankDetailed(extractedText);
         parsedImports.push(parsedFile);
         importedQuestions.push(...parsedFile.questions);
@@ -518,7 +593,8 @@ function App() {
         expected: expected || questions.length,
         parserWarnings,
         selectedIds: questions.map((question) => question.id),
-        issues
+        issues,
+        sourcePages
       });
       setProcessingProgress(100);
       await delay(180);
@@ -588,7 +664,8 @@ function App() {
       createdAt: now,
       updatedAt: now,
       questions,
-      attempts: []
+      attempts: [],
+      sourcePages: pendingImport.sourcePages
     };
     setStudySets((current) => [set, ...current]);
     setActiveSetId(set.id);
@@ -708,6 +785,55 @@ function App() {
       questions: [...repaired, ...missing],
       warnings: [summaryNote, ...(payload.warnings ?? [])]
     };
+  }
+
+  function exportLibraryBackup() {
+    const payload = {
+      schema: "quizforge-backup",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      theme,
+      settings,
+      studySets
+    };
+    downloadTextFile(`quizforge-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(payload, null, 2));
+    setToast("Library backup downloaded");
+  }
+
+  async function importLibraryBackup(file: File) {
+    try {
+      const payload = JSON.parse(await file.text()) as { studySets?: StudySet[]; studySet?: StudySet; settings?: ExamSettings; theme?: "light" | "dark" };
+      const candidates = Array.isArray(payload.studySets) ? payload.studySets : payload.studySet ? [payload.studySet] : [];
+      if (!candidates.length) throw new Error("This file does not contain a QuizForge backup or study set.");
+      const incoming = candidates.filter((set) => set && typeof set.id === "string" && Array.isArray(set.questions));
+      const incomingIds = new Set(incoming.map((set) => set.id));
+      setStudySets((current) => [...incoming, ...current.filter((set) => !incomingIds.has(set.id))]);
+      if (payload.settings) setSettings({ ...defaultSettings, ...payload.settings });
+      if (payload.theme === "light" || payload.theme === "dark") setTheme(payload.theme);
+      setToast(`${incoming.length} study set${incoming.length === 1 ? "" : "s"} restored`);
+    } catch (caught) {
+      setToast(caught instanceof Error ? caught.message : "Backup could not be imported");
+    }
+  }
+
+  function exportStudySet(setId: string, format: "json" | "csv") {
+    const studySet = studySets.find((set) => set.id === setId);
+    if (!studySet) return;
+    const safeName = studySet.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "study-set";
+    if (format === "json") {
+      downloadTextFile(`${safeName}.quizforge.json`, JSON.stringify({ schema: "quizforge-study-set", version: 1, studySet }, null, 2));
+    } else {
+      const header = ["Question", "Choice A", "Choice B", "Choice C", "Choice D", "Choice E", "Choice F", "Choice G", "Choice H", "Correct answers", "Topic", "Explanation", "Source page"];
+      const rows = studySet.questions.map((question) => {
+        const correct = getCorrectIds(question).map((id) => {
+          const index = question.options.findIndex((option) => option.id === id);
+          return index >= 0 ? String.fromCharCode(65 + index) : "";
+        }).filter(Boolean).join(", ");
+        return [question.question, ...Array.from({ length: 8 }, (_, index) => question.options[index]?.text ?? ""), correct, question.topic ?? "General", question.explanation, question.sourcePage ?? ""];
+      });
+      downloadTextFile(`${safeName}.csv`, [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\n"), "text/csv;charset=utf-8");
+    }
+    setToast(`${format.toUpperCase()} export downloaded`);
   }
 
   function updateActiveSet(updater: (set: StudySet) => StudySet) {
@@ -922,6 +1048,7 @@ function App() {
       questions: examQuestions,
       responses: {},
       flagged: {},
+      confidence: {},
       currentIndex: 0,
       startedAt: Date.now(),
       remainingSeconds: settings.timed ? settings.minutes * 60 : 0,
@@ -958,6 +1085,12 @@ function App() {
     if (!exam) return;
     const question = exam.questions[exam.currentIndex];
     setExam({ ...exam, flagged: { ...exam.flagged, [question.id]: !exam.flagged[question.id] } });
+  }
+
+  function setQuestionConfidence(level: ConfidenceLevel) {
+    if (!exam) return;
+    const question = exam.questions[exam.currentIndex];
+    setExam({ ...exam, confidence: { ...(exam.confidence ?? {}), [question.id]: level } });
   }
 
   function moveQuestion(index: number) {
@@ -1110,6 +1243,7 @@ function App() {
     if (exam && activeSetId) {
       saveExamRecovery({ activeSetId, exam, settings, savedAt: new Date().toISOString() });
       setRecoveryAvailable(true);
+      registerAutosave();
     }
     setSubmitReviewOpen(false);
     setToast("Exam saved — resume it anytime from Home");
@@ -1129,7 +1263,9 @@ function App() {
       return {
         question,
         selectedOptionIds,
-        correct: selectedOptionIds.length > 0 && sameAnswerSet(selectedOptionIds, correctOptionIds)
+        correct: selectedOptionIds.length > 0 && sameAnswerSet(selectedOptionIds, correctOptionIds),
+        confidence: exam.confidence?.[question.id] ?? null,
+        flagged: Boolean(exam.flagged[question.id])
       };
     });
     const correct = details.filter((detail) => detail.correct).length;
@@ -1146,7 +1282,9 @@ function App() {
       results: details.map((detail) => ({
         questionId: detail.question.id,
         topic: detail.question.topic || "General",
-        correct: detail.correct
+        correct: detail.correct,
+        confidence: detail.confidence ?? undefined,
+        flagged: detail.flagged
       }))
     };
     updateActiveSet((set) => ({ ...set, attempts: [attempt, ...set.attempts].slice(0, 30) }));
@@ -1170,6 +1308,7 @@ function App() {
           settings={settings}
           onAnswer={answerQuestion}
           onFlag={toggleFlag}
+          onConfidence={setQuestionConfidence}
           onMove={moveQuestion}
           onSubmit={requestExamSubmit}
           reviewOpen={submitReviewOpen}
@@ -1180,6 +1319,9 @@ function App() {
           onTimeFreeze={useTimeFreeze}
           onClue={useClue}
           onExit={leaveExamToDashboard}
+          autosaveState={autosaveState}
+          lastSavedAt={lastSavedAt}
+          sourcePages={activeSet?.sourcePages ?? []}
         />
       ) : view === "results" ? (
         <ResultsView
@@ -1188,6 +1330,8 @@ function App() {
           exam={exam}
           onRetake={() => beginExam()}
           onRetakeWrong={() => beginExam(resultDetails.filter((detail) => !detail.correct).map((detail) => detail.question.id))}
+          onRetakeQuestions={(ids) => beginExam(ids)}
+          sourcePages={activeSet?.sourcePages ?? []}
           onDashboard={() => navigate("dashboard")}
         />
       ) : (
@@ -1199,6 +1343,8 @@ function App() {
           onNavigate={navigate}
           onTheme={toggleTheme}
           onNew={newStudySet}
+          autosaveState={autosaveState}
+          lastSavedAt={lastSavedAt}
         >
           {view === "dashboard" && (
             <Dashboard
@@ -1219,6 +1365,9 @@ function App() {
               onSearch={setSearch}
               onOpen={openSet}
               onNew={newStudySet}
+              onExportBackup={exportLibraryBackup}
+              onImportBackup={importLibraryBackup}
+              onExportSet={exportStudySet}
             />
           )}
           {view === "performance" && <PerformanceView studySets={studySets} attempts={allAttempts} averageScore={averageScore} />}
@@ -1304,6 +1453,22 @@ function App() {
   );
 }
 
+function AutosaveBadge({ state, savedAt }: { state: AutosaveState; savedAt: Date | null }) {
+  const label = state === "offline" ? "Offline — saved locally" : state === "saving" ? "Saving…" : savedAt ? `Saved ${savedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Saved";
+  return <div className={`autosave-badge ${state}`} role="status" aria-live="polite">{state === "offline" ? <WifiOff size={14} /> : state === "saving" ? <Save size={14} className="saving-icon" /> : <CheckCircle2 size={14} />}<span>{label}</span></div>;
+}
+
+function SourcePageViewer({ pages, page, onClose }: { pages: SourcePage[]; page: number | null; onClose: () => void }) {
+  if (page === null) return null;
+  const source = pages.find((item) => item.page === page);
+  return <div className="modal-backdrop source-viewer-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}>
+    <section className="source-viewer" role="dialog" aria-modal="true" aria-labelledby="source-page-title">
+      <div className="source-viewer-head"><div><p className="eyebrow">PDF SOURCE</p><h2 id="source-page-title">Page {page}</h2><p>Text captured from the original PDF page during import.</p></div><button className="icon-button" type="button" aria-label="Close source page" onClick={onClose}><X size={18} /></button></div>
+      <div className="source-page-paper">{source?.text ? <pre>{source.text}</pre> : <div className="source-unavailable"><FileText size={28} /><strong>Source text unavailable</strong><p>This study set was created before source-page storage was added, or the question was added manually.</p></div>}</div>
+    </section>
+  </div>;
+}
+
 interface ShellProps {
   view: View;
   theme: "light" | "dark";
@@ -1313,9 +1478,11 @@ interface ShellProps {
   onNavigate: (view: View) => void;
   onTheme: () => void;
   onNew: () => void;
+  autosaveState: AutosaveState;
+  lastSavedAt: Date | null;
 }
 
-function Shell({ view, theme, sidebarOpen, children, onToggleSidebar, onNavigate, onTheme, onNew }: ShellProps) {
+function Shell({ view, theme, sidebarOpen, children, onToggleSidebar, onNavigate, onTheme, onNew, autosaveState, lastSavedAt }: ShellProps) {
   const nav = [
     { id: "dashboard" as View, label: "Home", icon: Home },
     { id: "library" as View, label: "Library", icon: Library },
@@ -1343,7 +1510,7 @@ function Shell({ view, theme, sidebarOpen, children, onToggleSidebar, onNavigate
       <main className="main-content">
         <header className="global-topbar simplified-topbar">
           <div className="mobile-brand"><span className="brand-mark">Q</span><strong>QuizForge</strong></div>
-          <div className="global-actions"><button className="icon-button" type="button" aria-label="Toggle theme" onClick={onTheme}>{theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}</button></div>
+          <div className="global-actions"><AutosaveBadge state={autosaveState} savedAt={lastSavedAt} /><button className="icon-button" type="button" aria-label="Toggle theme" onClick={onTheme}>{theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}</button></div>
         </header>
         <div key={view} className="view-transition">{children}</div>
       </main>
@@ -1426,13 +1593,17 @@ interface LibraryProps {
   onSearch: (value: string) => void;
   onOpen: (setId: string, target?: View) => void;
   onNew: () => void;
+  onExportBackup: () => void;
+  onImportBackup: (file: File) => void;
+  onExportSet: (setId: string, format: "json" | "csv") => void;
 }
 
-function LibraryView({ studySets, search, onSearch, onOpen, onNew }: LibraryProps) {
+function LibraryView({ studySets, search, onSearch, onOpen, onNew, onExportBackup, onImportBackup, onExportSet }: LibraryProps) {
+  const backupInputRef = useRef<HTMLInputElement>(null);
   const filtered = studySets.filter((set) => set.title.toLowerCase().includes(search.toLowerCase()) || set.sourceName.toLowerCase().includes(search.toLowerCase()));
   return (
     <div className="page-wrap">
-      <div className="page-head"><div><p className="eyebrow">YOUR LIBRARY</p><h1>Study sets</h1><p>Manage extracted questions and start new practice attempts.</p></div><button className="primary-button" type="button" onClick={onNew}><Plus size={17} /> New set</button></div>
+      <div className="page-head"><div><p className="eyebrow">YOUR LIBRARY</p><h1>Study sets</h1><p>Manage extracted questions, create backups, and export study material.</p></div><div className="toolbar library-head-actions"><input ref={backupInputRef} type="file" accept="application/json,.json" hidden onChange={(event) => { const file = event.target.files?.[0]; if (file) onImportBackup(file); event.currentTarget.value = ""; }} /><button className="ghost-button" type="button" onClick={() => backupInputRef.current?.click()}><Upload size={16} /> Restore backup</button><button className="ghost-button" type="button" onClick={onExportBackup}><Download size={16} /> Backup library</button><button className="primary-button" type="button" onClick={onNew}><Plus size={17} /> New set</button></div></div>
       <label className="search-box"><Search size={18} /><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="Search study sets" /></label>
       <section className="library-list">
         {filtered.map((set, index) => (
@@ -1440,7 +1611,7 @@ function LibraryView({ studySets, search, onSearch, onOpen, onNew }: LibraryProp
             <span className={`subject-icon ${["purple", "cyan", "orange"][index % 3]}`}>{set.title.slice(0, 2).toUpperCase()}</span>
             <div className="library-copy"><strong>{set.title}</strong><span>{set.questions.length} questions · {set.attempts.length} attempt{set.attempts.length === 1 ? "" : "s"} · {set.sourceName}</span></div>
             <div className="library-score"><small>Best score</small><strong>{set.attempts.length ? `${bestScore(set.attempts)}%` : "—"}</strong></div>
-            <button className="secondary-button compact" type="button" onClick={() => onOpen(set.id)}>Open <ChevronRight size={15} /></button>
+            <div className="library-row-actions"><button className="icon-button compact-icon" type="button" title="Export as QuizForge JSON" onClick={() => onExportSet(set.id, "json")}><FileJson size={16} /></button><button className="icon-button compact-icon" type="button" title="Export as CSV" onClick={() => onExportSet(set.id, "csv")}><FileSpreadsheet size={16} /></button><button className="secondary-button compact" type="button" onClick={() => onOpen(set.id)}>Open <ChevronRight size={15} /></button></div>
           </article>
         ))}
         {!filtered.length && <div className="empty-state"><FolderOpen size={35} /><strong>No study sets found</strong><p>Try another search or create a new set.</p></div>}
@@ -1861,6 +2032,7 @@ function EditorView({ studySet, question, onSelect, onUpdateQuestion, onUpdateOp
   const [topicFilter, setTopicFilter] = useState("All topics");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [bulkTopic, setBulkTopic] = useState("General");
+  const [sourcePageOpen, setSourcePageOpen] = useState<number | null>(null);
   const index = studySet.questions.findIndex((item) => item.id === question.id);
   const verified = studySet.questions.filter(isVerifiedQuestion).length;
   const next = studySet.questions[index + 1];
@@ -1944,7 +2116,7 @@ function EditorView({ studySet, question, onSelect, onUpdateQuestion, onUpdateOp
         </aside>
 
         <section className="question-editor-card" key={question.id}>
-          <div className="editor-card-head"><div><div className="editor-status-line"><span className={`status ${ready ? "ready" : "draft"}`}>{ready ? `${correctIds.length} answer${correctIds.length === 1 ? "" : "s"} verified` : "Needs review"}</span>{question.sourcePage && <span className="page-chip">Page {question.sourcePage}</span>}<span className="page-chip topic-chip"><Tag size={11} /> {question.topic ?? "General"}</span></div><h2>Question {index + 1}</h2><p>{multiple ? "This is a multiple-answer question. Select every correct choice." : ready ? "The detected answer is selected. You can still change it." : "Select the correct option before using this question in an exam."}</p></div><div className="editor-actions"><button className="icon-button" type="button" title="Duplicate" onClick={() => onDuplicate(question.id)}><Copy size={17} /></button><button className="icon-button danger-icon" type="button" title="Delete" onClick={() => onDelete(question.id)}><Trash2 size={17} /></button></div></div>
+          <div className="editor-card-head"><div><div className="editor-status-line"><span className={`status ${ready ? "ready" : "draft"}`}>{ready ? `${correctIds.length} answer${correctIds.length === 1 ? "" : "s"} verified` : "Needs review"}</span>{question.sourcePage && <button className="page-chip source-page-button" type="button" onClick={() => setSourcePageOpen(question.sourcePage ?? null)}><Eye size={12} /> Page {question.sourcePage}</button>}<span className="page-chip topic-chip"><Tag size={11} /> {question.topic ?? "General"}</span></div><h2>Question {index + 1}</h2><p>{multiple ? "This is a multiple-answer question. Select every correct choice." : ready ? "The detected answer is selected. You can still change it." : "Select the correct option before using this question in an exam."}</p></div><div className="editor-actions"><button className="icon-button" type="button" title="Duplicate" onClick={() => onDuplicate(question.id)}><Copy size={17} /></button><button className="icon-button danger-icon" type="button" title="Delete" onClick={() => onDelete(question.id)}><Trash2 size={17} /></button></div></div>
           <div className="editor-meta-grid"><div className="form-group"><label htmlFor="question-topic">Topic</label><input id="question-topic" className="text-input" value={question.topic ?? "General"} onChange={(event) => onUpdateQuestion(question.id, { topic: event.target.value })} /></div><div className="form-group"><label htmlFor="question-status">Review status</label><select id="question-status" className="text-input" value={question.status} onChange={(event) => onUpdateQuestion(question.id, { status: event.target.value as "verified" | "review" })}><option value="verified" disabled={!answerReady}>Verified</option><option value="review">Needs review</option></select></div></div>
           <div className="form-group"><label htmlFor="question-text">Question</label><textarea id="question-text" className="question-input" value={question.question} onChange={(event) => onUpdateQuestion(question.id, { question: event.target.value })} /></div>
           <div className="form-group"><div className="label-row answer-heading"><div><label>Answer choices</label><small>{multiple ? "Check all correct answers." : "Choose one correct answer."}</small></div><select className="answer-mode-select" aria-label="Answer selection mode" value={multiple ? "multiple" : "single"} onChange={(event) => onSelectionMode(question.id, event.target.value as "single" | "multiple")}><option value="single">Single answer</option><option value="multiple">Multiple answers</option></select></div><div className="answer-grid">
@@ -1957,6 +2129,7 @@ function EditorView({ studySet, question, onSelect, onUpdateQuestion, onUpdateOp
           <div className="editor-footer"><span>Changes save automatically in this browser.</span><div className="toolbar"><button className="ghost-button" type="button" disabled={!previous} onClick={() => previous && onSelect(previous.id)}><ChevronLeft size={16} /> Previous</button><button className="primary-button" type="button" onClick={() => next ? onSelect(next.id) : onSetup}>{next ? "Next question" : "Set up exam"}<ChevronRight size={16} /></button></div></div>
         </section>
       </div>
+      <SourcePageViewer pages={studySet.sourcePages ?? []} page={sourcePageOpen} onClose={() => setSourcePageOpen(null)} />
     </div>
   );
 }
@@ -2019,6 +2192,7 @@ function ExamView({
   settings,
   onAnswer,
   onFlag,
+  onConfidence,
   onMove,
   onSubmit,
   reviewOpen,
@@ -2028,12 +2202,16 @@ function ExamView({
   onAudiencePoll,
   onTimeFreeze,
   onClue,
-  onExit
+  onExit,
+  autosaveState,
+  lastSavedAt,
+  sourcePages
 }: {
   exam: ExamSession | null;
   settings: ExamSettings;
   onAnswer: (id: string) => void;
   onFlag: () => void;
+  onConfidence: (level: ConfidenceLevel) => void;
   onMove: (index: number) => void;
   onSubmit: () => void;
   reviewOpen: boolean;
@@ -2044,16 +2222,68 @@ function ExamView({
   onTimeFreeze: () => void;
   onClue: () => void;
   onExit: () => void;
+  autosaveState: AutosaveState;
+  lastSavedAt: Date | null;
+  sourcePages: SourcePage[];
 }) {
   const [navFilter, setNavFilter] = useState<"all" | "unanswered" | "flagged" | "incomplete">("all");
   const [navOpen, setNavOpen] = useState(false);
   const [lifelineMenuOpen, setLifelineMenuOpen] = useState(false);
+  const [shortcutOpen, setShortcutOpen] = useState(false);
+  const [sourcePageOpen, setSourcePageOpen] = useState<number | null>(null);
   useEffect(() => {
     setLifelineMenuOpen(false);
   }, [exam?.currentIndex]);
+  useEffect(() => {
+    if (!exam) return;
+    const handleKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      const currentQuestion = exam.questions[exam.currentIndex];
+      if (!currentQuestion) return;
+      const currentLifelines = exam.lifelines ?? { removedOptionIds: {} };
+      const currentConfidence = exam.confidence?.[currentQuestion.id] ?? null;
+      const key = event.key.toLowerCase();
+      if (event.key === "Escape") {
+        setShortcutOpen(false);
+        setSourcePageOpen(null);
+        setLifelineMenuOpen(false);
+        setNavOpen(false);
+        if (reviewOpen) onCloseReview();
+        return;
+      }
+      if (shortcutOpen || sourcePageOpen !== null || reviewOpen) return;
+      if (/^[1-8]$/.test(event.key)) {
+        const option = currentQuestion.options[Number(event.key) - 1];
+        const hidden = new Set(currentLifelines.removedOptionIds?.[currentQuestion.id] ?? []);
+        if (option && !hidden.has(option.id)) { event.preventDefault(); onAnswer(option.id); }
+      } else if ((key === "n" || event.key === "ArrowRight") && exam.currentIndex < exam.questions.length - 1) {
+        event.preventDefault(); onMove(exam.currentIndex + 1);
+      } else if ((key === "p" || event.key === "ArrowLeft") && exam.currentIndex > 0) {
+        event.preventDefault(); onMove(exam.currentIndex - 1);
+      } else if (key === "f") {
+        event.preventDefault(); onFlag();
+      } else if (key === "l" && lifelinesAreEnabled(settings)) {
+        event.preventDefault(); setLifelineMenuOpen((current) => !current);
+      } else if (key === "c") {
+        event.preventDefault();
+        const order: ConfidenceLevel[] = ["confident", "unsure", "guessed"];
+        const currentIndex = currentConfidence ? order.indexOf(currentConfidence) : -1;
+        onConfidence(order[(currentIndex + 1) % order.length]);
+      } else if (key === "s" && currentQuestion.sourcePage) {
+        event.preventDefault(); setSourcePageOpen(currentQuestion.sourcePage);
+      } else if (key === "k" || event.key === "?") {
+        event.preventDefault(); setShortcutOpen(true);
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [exam, settings, reviewOpen, shortcutOpen, sourcePageOpen, onAnswer, onFlag, onMove, onConfidence, onCloseReview]);
   if (!exam) return null;
   const question = exam.questions[exam.currentIndex];
   const selected = exam.responses[question.id] ?? [];
+  const confidence = exam.confidence?.[question.id] ?? null;
   const lifelines = exam.lifelines ?? {
     fiftyFiftyUsed: false,
     audiencePollUsed: false,
@@ -2102,6 +2332,8 @@ function ExamView({
     setNavOpen(false);
   }
 
+
+
   return (
     <div className="exam-shell streamlined-exam-shell">
       <header className="exam-topbar">
@@ -2111,7 +2343,7 @@ function ExamView({
         </div>
         <button className="exam-nav-trigger" type="button" onClick={() => setNavOpen(true)}><Menu size={17} /> Questions</button>
         <div className="exam-meta">
-          <div className="autosave-status"><CheckCircle2 size={15} /><span>Saved</span></div>
+          <AutosaveBadge state={autosaveState} savedAt={lastSavedAt} /><button className="icon-button exam-shortcut-button" type="button" title="Keyboard shortcuts" aria-label="Keyboard shortcuts" onClick={() => setShortcutOpen(true)}><Keyboard size={17} /></button>
           <div className={`timer ${freezeSeconds > 0 ? "frozen" : ""}`}><Clock3 size={17} /><span>{settings.timed ? formatDuration(exam.remainingSeconds) : "Untimed"}</span><small>{freezeSeconds > 0 ? `frozen ${freezeSeconds}s` : settings.timed ? "remaining" : "no limit"}</small></div>
           <button className="primary-button compact" type="button" onClick={onSubmit}>Review & submit</button>
         </div>
@@ -2135,8 +2367,13 @@ function ExamView({
           <div className="exam-progress"><span>Question {exam.currentIndex + 1} of {exam.questions.length}</span><span>{Math.round(((exam.currentIndex + 1) / exam.questions.length) * 100)}%</span></div>
           <div className="exam-progress-track"><span style={{ width: `${((exam.currentIndex + 1) / exam.questions.length) * 100}%` }} /></div>
           <section className="exam-question-card" key={question.id}>
-            <div className="question-kicker"><span>{multiple ? "MULTIPLE ANSWERS" : "MULTIPLE CHOICE"} · {question.topic ?? "General"}</span><button className={`flag-button ${exam.flagged[question.id] ? "flagged" : ""}`} type="button" onClick={onFlag}><Flag size={15} /> {exam.flagged[question.id] ? "Flagged" : "Flag for review"}</button></div>
-            <h1>{question.question}</h1>
+            <div className="question-kicker"><span>{multiple ? "MULTIPLE ANSWERS" : "MULTIPLE CHOICE"} · {question.topic ?? "General"}</span><div className="question-kicker-actions">{question.sourcePage && <button className="source-link-button" type="button" onClick={() => setSourcePageOpen(question.sourcePage ?? null)}><Eye size={14} /> Source page {question.sourcePage}</button>}<button className={`flag-button ${exam.flagged[question.id] ? "flagged" : ""}`} type="button" onClick={onFlag}><Flag size={15} /> {exam.flagged[question.id] ? "Flagged" : "Flag for review"}</button></div></div>
+            <h1 className="content-text">{question.question}</h1>
+
+            <div className="confidence-control" role="group" aria-label="Answer confidence">
+              <span>How sure are you?</span>
+              <div>{(["confident", "unsure", "guessed"] as ConfidenceLevel[]).map((level) => <button key={level} className={confidence === level ? "active" : ""} type="button" onClick={() => onConfidence(level)}>{level}</button>)}</div>
+            </div>
 
             {lifelinesEnabled && (
               <div className="lifeline-menu-wrap">
@@ -2180,7 +2417,7 @@ function ExamView({
                 return (
                   <button className={`exam-option ${isSelected ? "selected" : ""} ${pollValue !== undefined ? "with-poll" : ""}`} key={option.id} type="button" onClick={() => onAnswer(option.id)}>
                     <span className="option-letter">{String.fromCharCode(65 + index)}</span>
-                    <span className="option-text">{option.text}</span>
+                    <span className="option-text content-text">{option.text}</span>
                     {pollValue !== undefined && <span className="audience-poll"><i style={{ width: `${pollValue}%` }} /><b>{pollValue}%</b></span>}
                     {isSelected && <span className="option-check"><Check size={18} /></span>}
                   </button>
@@ -2191,32 +2428,55 @@ function ExamView({
           </section>
         </main>
       </div>
+      <SourcePageViewer pages={sourcePages} page={sourcePageOpen} onClose={() => setSourcePageOpen(null)} />
+      {shortcutOpen && <div className="modal-backdrop shortcut-backdrop"><section className="shortcut-modal" role="dialog" aria-modal="true" aria-labelledby="shortcut-title"><div className="source-viewer-head"><div><p className="eyebrow">DESKTOP CONTROLS</p><h2 id="shortcut-title">Keyboard shortcuts</h2><p>Move through an exam without reaching for the mouse.</p></div><button className="icon-button" type="button" aria-label="Close shortcuts" onClick={() => setShortcutOpen(false)}><X size={18} /></button></div><div className="shortcut-grid"><span><kbd>1–8</kbd>Select answer</span><span><kbd>N / →</kbd>Next question</span><span><kbd>P / ←</kbd>Previous question</span><span><kbd>F</kbd>Flag question</span><span><kbd>C</kbd>Cycle confidence</span><span><kbd>L</kbd>Open lifelines</span><span><kbd>S</kbd>View source page</span><span><kbd>Esc</kbd>Close panel</span></div></section></div>}
       {reviewOpen && <div className="modal-backdrop exam-review-backdrop"><section className="submit-review-modal" role="dialog" aria-modal="true" aria-labelledby="submit-review-title"><button className="modal-close" type="button" aria-label="Close review" onClick={onCloseReview}><X size={18} /></button><span className="modal-success-orb review-orb"><ListFilter size={28} /></span><p className="eyebrow">FINAL REVIEW</p><h2 id="submit-review-title">Ready to submit?</h2><p>Check unanswered, incomplete, and flagged questions before your answers are scored.</p><div className="submit-review-stats"><button type="button" onClick={() => { setNavFilter("unanswered"); onCloseReview(); setNavOpen(true); }}><strong>{counts.unanswered}</strong><small>Unanswered</small></button>{hasMultipleQuestions && <button type="button" onClick={() => { setNavFilter("incomplete"); onCloseReview(); setNavOpen(true); }}><strong>{counts.incomplete}</strong><small>Incomplete</small></button>}<button type="button" onClick={() => { setNavFilter("flagged"); onCloseReview(); setNavOpen(true); }}><strong>{counts.flagged}</strong><small>Flagged</small></button><div><strong>{counts.answered}</strong><small>Complete</small></div></div><div className="submit-question-grid">{exam.questions.map((item, index) => { const status = statusFor(item); return <button key={item.id} type="button" className={`${status.answered ? "complete" : status.incomplete ? "incomplete" : "unanswered"} ${status.flagged ? "flagged" : ""}`} onClick={() => { onMove(index); onCloseReview(); }}>{index + 1}</button>; })}</div><div className="submit-review-actions"><button className="ghost-button" type="button" onClick={onCloseReview}>Return to exam</button><button className="primary-button" type="button" onClick={onConfirmSubmit}>Submit now <Check size={16} /></button></div></section></div>}
     </div>
   );
 }
 
 
-function ResultsView({ details, settings, exam, onRetake, onRetakeWrong, onDashboard }: { details: ResultDetail[]; settings: ExamSettings; exam: ExamSession | null; onRetake: () => void; onRetakeWrong: () => void; onDashboard: () => void }) {
+function ResultsView({ details, settings, exam, onRetake, onRetakeWrong, onRetakeQuestions, sourcePages, onDashboard }: { details: ResultDetail[]; settings: ExamSettings; exam: ExamSession | null; onRetake: () => void; onRetakeWrong: () => void; onRetakeQuestions: (ids: string[]) => void; sourcePages: SourcePage[]; onDashboard: () => void }) {
+  const [filter, setFilter] = useState<"all" | "incorrect" | "correct" | "guessed" | "unsure" | "flagged" | "no-explanation">("all");
+  const [sourcePageOpen, setSourcePageOpen] = useState<number | null>(null);
   const correct = details.filter((detail) => detail.correct).length;
   const total = details.length;
   const percent = total ? Math.round((correct / total) * 100) : 0;
   const pass = percent >= 70;
   const wrong = details.filter((detail) => !detail.correct);
+  const guessed = details.filter((detail) => detail.confidence === "guessed");
+  const unsure = details.filter((detail) => detail.confidence === "unsure");
+  const flagged = details.filter((detail) => detail.flagged);
+  const correctButGuessed = details.filter((detail) => detail.correct && detail.confidence === "guessed").length;
+  const incorrectConfident = details.filter((detail) => !detail.correct && detail.confidence === "confident").length;
   const timeUsed = exam ? Math.max(0, Math.round(((exam.submittedAt ?? Date.now()) - exam.startedAt) / 1000)) : 0;
+  const filtered = details.filter((detail) => filter === "all"
+    || (filter === "incorrect" && !detail.correct)
+    || (filter === "correct" && detail.correct)
+    || (filter === "guessed" && detail.confidence === "guessed")
+    || (filter === "unsure" && detail.confidence === "unsure")
+    || (filter === "flagged" && detail.flagged)
+    || (filter === "no-explanation" && !detail.question.explanation.trim()));
+  const filterItems = [
+    ["all", "All", total], ["incorrect", "Incorrect", wrong.length], ["correct", "Correct", correct],
+    ["guessed", "Guessed", guessed.length], ["unsure", "Unsure", unsure.length], ["flagged", "Flagged", flagged.length],
+    ["no-explanation", "No explanation", details.filter((detail) => !detail.question.explanation.trim()).length]
+  ] as const;
   return (
     <div className="results-page">
       {pass && <div className="confetti" aria-hidden="true">{Array.from({ length: 20 }, (_, index) => <i key={index} style={{ "--i": index } as React.CSSProperties} />)}</div>}
-      <div className="results-wrap"><section className="results-hero"><div className="score-ring" style={{ "--score": `${percent}%` } as React.CSSProperties}><div className="score-value"><strong>{percent}%</strong><small>FINAL SCORE</small></div></div><div className="results-copy"><span className="pill"><Sparkles size={14} /> {pass ? "TARGET REACHED" : "KEEP PRACTICING"}</span><h1>{pass ? "Great work!" : "You’re making progress."}</h1><p>{pass ? "You passed this mock exam. Review anything you missed to make the next attempt stronger." : "Review the correct answers and explanations below, then retake the questions you missed."}</p><div className="result-stats"><div><strong>{correct}/{total}</strong><small>Correct answers</small></div><div><strong>{formatDuration(timeUsed)}</strong><small>Time used</small></div><div><strong>{wrong.length}</strong><small>Need review</small></div></div><div className="results-actions"><button className="white-button" type="button" onClick={onRetake}>Retake exam</button>{wrong.length > 0 && <button className="outline-light" type="button" onClick={onRetakeWrong}>Retake incorrect</button>}<button className="outline-light" type="button" onClick={onDashboard}>Dashboard</button></div></div></section>
-        <section className="review-section"><div className="section-heading"><div><p className="eyebrow">ANSWER REVIEW</p><h2>Learn from every question</h2></div></div>{details.map((detail, index) => {
+      <div className="results-wrap"><section className="results-hero"><div className="score-ring" style={{ "--score": `${percent}%` } as React.CSSProperties}><div className="score-value"><strong>{percent}%</strong><small>FINAL SCORE</small></div></div><div className="results-copy"><span className="pill"><Sparkles size={14} /> {pass ? "TARGET REACHED" : "KEEP PRACTICING"}</span><h1>{pass ? "Great work!" : "You’re making progress."}</h1><p>{pass ? "You passed this mock exam. Review anything you missed to make the next attempt stronger." : "Review the correct answers and explanations below, then retake the questions you missed."}</p><div className="result-stats"><div><strong>{correct}/{total}</strong><small>Correct answers</small></div><div><strong>{formatDuration(timeUsed)}</strong><small>Time used</small></div><div><strong>{correctButGuessed}</strong><small>Correct but guessed</small></div><div><strong>{incorrectConfident}</strong><small>Confident mistakes</small></div></div><div className="results-actions"><button className="white-button" type="button" onClick={onRetake}>Retake exam</button>{wrong.length > 0 && <button className="outline-light" type="button" onClick={onRetakeWrong}>Retake incorrect</button>}{guessed.length > 0 && <button className="outline-light" type="button" onClick={() => onRetakeQuestions(guessed.map((detail) => detail.question.id))}>Retake guessed</button>}{flagged.length > 0 && <button className="outline-light" type="button" onClick={() => onRetakeQuestions(flagged.map((detail) => detail.question.id))}>Retake flagged</button>}<button className="outline-light" type="button" onClick={onDashboard}>Dashboard</button></div></div></section>
+        <section className="review-section"><div className="section-heading results-review-heading"><div><p className="eyebrow">ANSWER REVIEW</p><h2>Learn from every question</h2></div><span>{filtered.length} shown</span></div><div className="results-filter-bar" role="group" aria-label="Filter answer review">{filterItems.map(([id, label, count]) => <button key={id} className={filter === id ? "active" : ""} type="button" onClick={() => setFilter(id)}><span>{label}</span><b>{count}</b></button>)}</div>{filtered.map((detail) => {
+          const index = details.indexOf(detail);
           const selectedOptions = detail.question.options.filter((option) => detail.selectedOptionIds.includes(option.id));
           const correctIds = getCorrectIds(detail.question);
           const correctOptions = detail.question.options.filter((option) => correctIds.includes(option.id));
           const selectedText = selectedOptions.map((option) => option.text).join(" • ");
           const correctText = correctOptions.map((option) => option.text).join(" • ");
-          return <article className={`review-card ${detail.correct ? "correct-review" : "wrong-review"}`} key={detail.question.id}><div className="review-head"><span className={`review-badge ${detail.correct ? "" : "wrong"}`}>{detail.correct ? <Check size={18} /> : <X size={18} />}</span><div><h3>{index + 1}. {detail.question.question}</h3><p>{detail.correct ? "Correct answer" : selectedText ? `Your answer: ${selectedText}` : "No answer selected"}</p></div></div>{!detail.correct && <div className="correct-answer-callout"><strong>Correct answer{correctOptions.length > 1 ? "s" : ""}</strong><span>{correctText || "Unavailable"}</span></div>}{settings.showExplanations && detail.question.explanation && <div className="review-explanation"><Sparkles size={16} /><span>{detail.question.explanation}</span></div>}</article>;
-        })}</section>
+          return <article className={`review-card ${detail.correct ? "correct-review" : "wrong-review"}`} key={detail.question.id}><div className="review-head"><span className={`review-badge ${detail.correct ? "" : "wrong"}`}>{detail.correct ? <Check size={18} /> : <X size={18} />}</span><div><div className="review-meta-line">{detail.confidence && <span className={`confidence-badge ${detail.confidence}`}>{detail.confidence}</span>}{detail.flagged && <span className="flagged-review-badge"><Flag size={11} /> Flagged</span>}{detail.question.sourcePage && <button type="button" className="source-inline-button" onClick={() => setSourcePageOpen(detail.question.sourcePage ?? null)}><Eye size={12} /> Page {detail.question.sourcePage}</button>}</div><h3 className="content-text">{index + 1}. {detail.question.question}</h3><p className="content-text">{selectedText ? `Your answer: ${selectedText}` : "No answer selected"}</p></div></div><div className="correct-answer-callout"><strong>Correct answer{correctOptions.length > 1 ? "s" : ""}</strong><span className="content-text">{correctText || "Unavailable"}</span></div>{settings.showExplanations && detail.question.explanation && <div className="review-explanation"><Sparkles size={16} /><span className="content-text">{detail.question.explanation}</span></div>}</article>;
+        })}{!filtered.length && <div className="empty-state results-empty"><Filter size={28} /><strong>No questions match this filter</strong><p>Choose another filter to continue reviewing.</p></div>}</section>
       </div>
+      <SourcePageViewer pages={sourcePages} page={sourcePageOpen} onClose={() => setSourcePageOpen(null)} />
     </div>
   );
 }

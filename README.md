@@ -1,4 +1,4 @@
-# QuizForge React v2.8
+# QuizForge React v3.1
 
 QuizForge turns text-based PDF question banks and manually entered questions into editable mock exams. It uses React and TypeScript in the browser, PDF.js for local PDF text extraction, browser storage for saved study sets, and an optional server-side OpenAI import assistant.
 
@@ -62,3 +62,19 @@ Then add `OPENAI_API_KEY` in Vercel Project Settings → Environment Variables a
 - Removes highlighted styling from Lifelines controls.
 - Adds Select all and Deselect all controls for large manual question sets.
 - Improves alignment in the review editor and exam setup.
+
+## v3.0.1 results fix
+
+The answer-review screen now shows the correct answer for every question, including questions answered correctly. The user's selected answer is shown separately.
+
+
+## v3.1 study experience update
+
+- Dual-font interface: Oxanium for UI and Inter for readable study content.
+- Consistent spacing and control sizing across editor, setup, exam, and results.
+- Visible autosave and offline-local-save status.
+- Keyboard shortcuts during exams.
+- Source-page text viewer for newly imported PDFs.
+- Confidence marking: Confident, Unsure, and Guessed.
+- Full-library backup/restore plus study-set JSON and CSV export.
+- Rich answer-review filters and targeted retake actions.

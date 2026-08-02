@@ -1,6 +1,6 @@
 {
   "name": "quizforge-react",
-  "version": "2.8.0",
+  "version": "2.9.0",
   "private": true,
   "type": "module",
   "description": "A local-first React app that turns PDFs and notes into editable mock exams.",

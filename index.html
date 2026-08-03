@@ -1,29 +1,37 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="Turn PDFs and notes into editable mock exams." />
-    <meta name="theme-color" content="#6d50f5" />
-    <title>QuizForge — PDF to Mock Exam</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Oxanium:wght@400;500;600;700&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/styles.css" />
-    <script type="importmap">
-      {
-        "imports": {
-          "react": "https://esm.sh/react@19.2.0",
-          "react/jsx-runtime": "https://esm.sh/react@19.2.0/jsx-runtime",
-          "react-dom/client": "https://esm.sh/react-dom@19.2.0/client?deps=react@19.2.0",
-          "lucide-react": "https://esm.sh/lucide-react@0.468.0?deps=react@19.2.0",
-          "pdfjs-dist": "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.mjs"
+export const DEFAULT_TOPIC = "General";
+export function inferTopic(_question) {
+    return DEFAULT_TOPIC;
+}
+export function ensureQuestionTopics(questions) {
+    return questions.map((question) => ({ ...question, topic: question.topic?.trim() || inferTopic(question) }));
+}
+export function availableTopics(questions) {
+    return [...new Set(questions.map((question) => question.topic?.trim() || DEFAULT_TOPIC))].sort((a, b) => a.localeCompare(b));
+}
+export function computeTopicPerformance(attempts) {
+    const map = new Map();
+    for (const attempt of attempts) {
+        for (const result of attempt.results ?? []) {
+            const topic = result.topic || DEFAULT_TOPIC;
+            const current = map.get(topic) ?? { attempts: new Set(), correct: 0, total: 0 };
+            current.attempts.add(attempt.id);
+            current.correct += result.correct ? 1 : 0;
+            current.total += 1;
+            map.set(topic, current);
         }
-      }
-    </script>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/main.js"></script>
-  </body>
-</html>
+    }
+    return [...map.entries()]
+        .map(([topic, value]) => ({
+        topic,
+        attempts: value.attempts.size,
+        correct: value.correct,
+        total: value.total,
+        accuracy: value.total ? Math.round((value.correct / value.total) * 100) : 0
+    }))
+        .sort((a, b) => a.accuracy - b.accuracy || b.total - a.total);
+}
+export function weakTopics(attempts, threshold = 70) {
+    return computeTopicPerformance(attempts)
+        .filter((item) => item.total >= 2 && item.accuracy < threshold)
+        .map((item) => item.topic);
+}

@@ -1860,3 +1860,63 @@ button,select,label,summary,.brand,.eyebrow,.pill,.status,h1,h2,h3,h4,h5,h6,
 .accordion-content{overflow:hidden;border-radius:0 0 19px 19px}
 .manual-card-menu{z-index:3}
 .create-page-head>div:first-child>p:last-child,.manual-panel-footer>span{font-family:var(--font-reading);text-transform:none;letter-spacing:0}
+
+
+/* QuizForge v3.3.1 — restore comfortable status-banner sizing and center creation tabs. */
+.restored-draft-banner{
+  min-height:58px;
+  gap:13px;
+  margin:0 0 22px;
+  padding:15px 18px;
+  border-radius:16px;
+  font-family:var(--font-reading);
+  font-size:13px;
+  line-height:1.5;
+  letter-spacing:0;
+  text-transform:none;
+}
+.restored-draft-banner svg{
+  width:21px;
+  height:21px;
+}
+.restored-draft-banner strong{
+  margin-right:4px;
+  font-family:var(--font-display);
+  font-size:12px;
+  letter-spacing:.035em;
+  text-transform:uppercase;
+}
+.cleaner-create-panel{
+  margin-top:0;
+}
+.creation-mode-tabs{
+  width:min(100%,720px);
+  margin:0 auto 28px;
+}
+.creation-mode-tabs>button{
+  justify-content:center;
+  text-align:center;
+  min-height:70px;
+  padding:13px 20px;
+}
+.creation-mode-tabs>button>span{
+  text-align:left;
+}
+
+@media(max-width:760px){
+  .restored-draft-banner{
+    min-height:54px;
+    margin-bottom:18px;
+    padding:13px 15px;
+    font-size:12px;
+  }
+  .creation-mode-tabs{
+    width:100%;
+    margin-bottom:22px;
+  }
+  .creation-mode-tabs>button{
+    min-height:62px;
+    padding:11px 12px;
+  }
+  .creation-mode-tabs small{display:none}
+}

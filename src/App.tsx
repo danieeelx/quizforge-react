@@ -1783,7 +1783,7 @@ function UploadView({
         </div>
       </div>
 
-      {mode === "pdf" && recoveredFileName && !file && <div className="recovery-note"><ArchiveRestore size={18} /><span><strong>Draft restored.</strong> Reselect “{recoveredFileName}” to continue the PDF import.</span></div>}
+      {mode === "pdf" && recoveredFileName && !file && <div className="recovery-note restored-draft-banner"><ArchiveRestore size={21} /><span><strong>Draft restored.</strong> Reselect “{recoveredFileName}” to continue the PDF import.</span></div>}
       {error && <div className="error-banner"><X size={18} /><span>{error}</span></div>}
 
       <section className="streamlined-create-panel cleaner-create-panel">

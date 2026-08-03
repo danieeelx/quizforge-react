@@ -119,6 +119,7 @@ export interface PasteSectionDraft {
   id: string;
   title: string;
   topic: string;
+  explanation?: string;
   question: string;
   answers: PasteAnswerDraft[];
   selectionMode: SelectionMode;
@@ -130,6 +131,7 @@ export interface PasteSectionDraft {
 
 export interface UploadDraft {
   title: string;
+  mode?: "pdf" | "manual";
   pasteSections: PasteSectionDraft[];
   aiEnhanced: boolean;
   ocrEnabled: boolean;

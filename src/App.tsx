@@ -59,6 +59,7 @@ import { validateQuestions, type ValidationIssue } from "./lib/validation.js";
 type View = "dashboard" | "library" | "performance" | "upload" | "processing" | "import-preview" | "editor" | "setup" | "exam" | "results";
 
 type ProcessingStep = "read" | "detect" | "answers" | "finish";
+type CreateMode = "pdf" | "manual";
 
 interface ResultDetail {
   question: ExamQuestion;
@@ -79,6 +80,7 @@ interface PasteSection {
   id: string;
   title: string;
   topic: string;
+  explanation: string;
   question: string;
   answers: PasteAnswerDraft[];
   selectionMode: "single" | "multiple";
@@ -133,6 +135,7 @@ function createPasteSection(): PasteSection {
     id: uid(),
     title: "",
     topic: "General",
+    explanation: "",
     question: "",
     answers: [createPasteAnswer(), createPasteAnswer(), createPasteAnswer(), createPasteAnswer()],
     selectionMode: "single",
@@ -161,6 +164,7 @@ function normalizePasteSections(rawSections: unknown): PasteSection[] {
         id: typeof raw.id === "string" ? raw.id : uid(),
         title: typeof raw.title === "string" ? raw.title : "",
         topic: typeof raw.topic === "string" && raw.topic.trim() ? raw.topic : "General",
+        explanation: typeof raw.explanation === "string" ? raw.explanation : "",
         question: raw.question,
         answers,
         selectionMode: raw.selectionMode === "multiple" ? "multiple" as const : "single" as const,
@@ -183,6 +187,7 @@ function normalizePasteSections(rawSections: unknown): PasteSection[] {
       id: typeof raw.id === "string" ? raw.id : uid(),
       title: typeof raw.title === "string" ? raw.title : "",
       topic: typeof raw.title === "string" && raw.title.trim() ? raw.title : "General",
+      explanation: "",
       question: legacyQuestion,
       answers: legacyAnswers,
       selectionMode: "single" as const,
@@ -195,6 +200,7 @@ function normalizePasteSections(rawSections: unknown): PasteSection[] {
     Boolean(
       section.title.trim()
       || section.question.trim()
+      || section.explanation.trim()
       || section.answers.some((answer) => answer.text.trim())
       || (section.topic.trim() && section.topic.trim().toLowerCase() !== "general")
     )
@@ -204,6 +210,11 @@ function normalizePasteSections(rawSections: unknown): PasteSection[] {
   return withContent.map((section, index) => ({ ...section, expanded: firstExpanded === -1 ? index === 0 : index === firstExpanded }));
 }
 
+function isPasteSectionReady(section: PasteSection): boolean {
+  const enteredAnswers = section.answers.filter((answer) => answer.text.trim());
+  const correctAnswers = enteredAnswers.filter((answer) => answer.correct);
+  return section.question.trim().length >= 3 && enteredAnswers.length >= 2 && correctAnswers.length > 0;
+}
 
 function getCorrectIds(question: Question): string[] {
   if (Array.isArray(question.correctOptionIds) && question.correctOptionIds.length) return question.correctOptionIds;
@@ -280,9 +291,9 @@ function App() {
   const [recoveredFileName, setRecoveredFileName] = useState(initialUploadDraft?.fileName ?? "");
   const [pasteSections, setPasteSections] = useState<PasteSection[]>(() => normalizePasteSections(initialUploadDraft?.pasteSections));
   const [studyTitle, setStudyTitle] = useState(initialUploadDraft?.title ?? "");
+  const [createMode, setCreateMode] = useState<CreateMode>(() => initialUploadDraft?.mode === "manual" || initialUploadDraft?.mode === "pdf" ? initialUploadDraft.mode : (normalizePasteSections(initialUploadDraft?.pasteSections).length ? "manual" : "pdf"));
   const [aiEnhanced, setAiEnhanced] = useState(false);
   const [ocrEnabled] = useState(false);
-  const [aiConfigured, setAiConfigured] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [processingProgress, setProcessingProgress] = useState(0);
   const [processingStep, setProcessingStep] = useState<ProcessingStep>("read");
@@ -352,6 +363,7 @@ function App() {
     if (!hasDraftContent) return;
     saveUploadDraft({
       title: studyTitle,
+      mode: createMode,
       pasteSections,
       aiEnhanced,
       ocrEnabled,
@@ -359,7 +371,7 @@ function App() {
       fileName: selectedFile?.name ?? initialUploadDraft?.fileName
     });
     registerAutosave();
-  }, [studyTitle, pasteSections, aiEnhanced, ocrEnabled, selectedFile]);
+  }, [studyTitle, createMode, pasteSections, aiEnhanced, ocrEnabled, selectedFile]);
 
   useEffect(() => {
     if (view === "exam" && exam && activeSetId) {
@@ -372,13 +384,6 @@ function App() {
       }
     }
   }, [view, exam, activeSetId, settings]);
-
-  useEffect(() => {
-    fetch("/api/health")
-      .then((response) => response.json())
-      .then((data: { aiConfigured?: boolean }) => setAiConfigured(Boolean(data.aiConfigured)))
-      .catch(() => setAiConfigured(false));
-  }, []);
 
   useEffect(() => {
     if (!toast) return;
@@ -434,6 +439,7 @@ function App() {
     setPasteSections([]);
     setStudyTitle("");
     setAiEnhanced(false);
+    setCreateMode("pdf");
     clearUploadDraft();
     setToast("Draft cleared");
   }
@@ -481,9 +487,15 @@ function App() {
   }
 
   async function createStudySet() {
-    const populatedSections = pasteSections.filter((section) => section.question.trim().length >= 3);
-    if (!selectedFile && !populatedSections.length) {
-      setError("Choose a PDF/image or add at least one question first.");
+    const populatedSections = createMode === "manual" ? pasteSections.filter((section) => section.question.trim().length >= 3) : [];
+    const readyManualSections = populatedSections.filter(isPasteSectionReady);
+    const activeFile = createMode === "pdf" ? selectedFile : null;
+    if (createMode === "pdf" && !activeFile) {
+      setError("Choose a text-based PDF first.");
+      return;
+    }
+    if (createMode === "manual" && !readyManualSections.length) {
+      setError("Complete at least one question and select its correct answer first.");
       return;
     }
 
@@ -502,9 +514,9 @@ function App() {
         ? `${populatedSections.length} manually added questions`
         : "Manually added question";
 
-      if (selectedFile) {
-        sourceName = populatedSections.length ? `${selectedFile.name} + ${populatedSections.length} manual question${populatedSections.length === 1 ? "" : "s"}` : selectedFile.name;
-        const extractedText = await extractPdfText(selectedFile, ({ progress, page, totalPages }) => {
+      if (activeFile) {
+        sourceName = activeFile.name;
+        const extractedText = await extractPdfText(activeFile, ({ progress, page, totalPages }) => {
           setProcessingLabel(`Reading page ${page} of ${totalPages}`);
           setProcessingProgress(Math.max(5, Math.min(52, Math.round(progress * 0.52))));
         }, { enableOcr: false });
@@ -537,7 +549,7 @@ function App() {
           correctOptionId: correctOptionIds[0] ?? null,
           correctOptionIds,
           selectionMode: section.selectionMode === "multiple" || correctOptionIds.length > 1 ? "multiple" : "single",
-          explanation: "",
+          explanation: section.explanation.trim(),
           status: correctOptionIds.length ? "verified" : "review",
           topic,
           importWarnings: options.length < 2 ? ["Add at least two answer choices."] : undefined
@@ -545,6 +557,7 @@ function App() {
         const sourceLines = [
           `${sectionIndex + 1}. ${section.question.trim()}`,
           ...optionDrafts.map((answer, answerIndex) => `${String.fromCharCode(65 + answerIndex)}. ${answer.text.trim()}`),
+          section.explanation.trim() ? `Explanation: ${section.explanation.trim()}` : "",
           correctOptionIds.length
             ? `Answer: ${optionDrafts.map((answer, answerIndex) => answer.correct ? String.fromCharCode(65 + answerIndex) : "").filter(Boolean).join(", ")}`
             : ""
@@ -679,7 +692,8 @@ function App() {
     clearUploadDraft();
     setSelectedFile(null);
     setRecoveredFileName("");
-    setPasteSections([createPasteSection()]);
+    setPasteSections([]);
+    setCreateMode("pdf");
     setStudyTitle("");
     setPendingImport(null);
     setToast(`${questions.length} questions added`);
@@ -1381,9 +1395,8 @@ function App() {
               file={selectedFile}
               pasteSections={pasteSections}
               title={studyTitle}
+              mode={createMode}
               dragging={dragging}
-              aiEnhanced={aiEnhanced}
-              aiConfigured={aiConfigured}
               recoveredFileName={recoveredFileName}
               error={error}
               fileInputRef={fileInputRef}
@@ -1392,8 +1405,8 @@ function App() {
               onAddPasteSection={addPasteSection}
               onRemovePasteSection={removePasteSection}
               onTitle={setStudyTitle}
+              onMode={(mode) => { setCreateMode(mode); setError(""); }}
               onDragging={setDragging}
-              onAi={setAiEnhanced}
               onClearDraft={clearStudyDraft}
               onCreate={createStudySet}
               onCancel={() => navigate("dashboard")}
@@ -1401,9 +1414,11 @@ function App() {
           )}
           {view === "processing" && (
             <ProcessingView
-              fileName={selectedFile?.name || (pasteSections.filter((section) => section.question.trim()).length > 1
-                ? `${pasteSections.filter((section) => section.question.trim()).length} manual questions`
-                : pasteSections.find((section) => section.question.trim())?.title || "Manually added question")}
+              fileName={createMode === "pdf"
+                ? (selectedFile?.name || "PDF import")
+                : (pasteSections.filter((section) => section.question.trim()).length > 1
+                  ? `${pasteSections.filter((section) => section.question.trim()).length} manual questions`
+                  : pasteSections.find((section) => section.question.trim())?.question || "Manually added question")}
               progress={processingProgress}
               step={processingStep}
               activeLabel={processingLabel}
@@ -1661,9 +1676,8 @@ interface UploadProps {
   file: File | null;
   pasteSections: PasteSection[];
   title: string;
+  mode: CreateMode;
   dragging: boolean;
-  aiEnhanced: boolean;
-  aiConfigured: boolean;
   recoveredFileName?: string;
   error: string;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
@@ -1672,8 +1686,8 @@ interface UploadProps {
   onAddPasteSection: () => void;
   onRemovePasteSection: (id: string) => void;
   onTitle: (title: string) => void;
+  onMode: (mode: CreateMode) => void;
   onDragging: (dragging: boolean) => void;
-  onAi: (enabled: boolean) => void;
   onClearDraft: () => void;
   onCreate: () => void;
   onCancel: () => void;
@@ -1683,9 +1697,8 @@ function UploadView({
   file,
   pasteSections,
   title,
+  mode,
   dragging,
-  aiEnhanced,
-  aiConfigured,
   recoveredFileName,
   error,
   fileInputRef,
@@ -1694,8 +1707,8 @@ function UploadView({
   onAddPasteSection,
   onRemovePasteSection,
   onTitle,
+  onMode,
   onDragging,
-  onAi,
   onClearDraft,
   onCreate,
   onCancel
@@ -1705,6 +1718,7 @@ function UploadView({
     const supported = candidate.type === "application/pdf" || /\.pdf$/i.test(candidate.name);
     if (!supported) return;
     onFile(candidate);
+    onMode("pdf");
     if (!title.trim()) onTitle(stripExtension(candidate.name));
   }
 
@@ -1744,136 +1758,180 @@ function UploadView({
     onUpdatePasteSection(section.id, { answers: section.answers.filter((answer) => answer.id !== answerId) });
   }
 
-  const completedSections = pasteSections.filter((section) => section.question.trim().length >= 3).length;
-  const expandedCount = pasteSections.filter((section) => section.expanded).length;
+  const readyCount = pasteSections.filter(isPasteSectionReady).length;
+  const draftCount = pasteSections.length;
+  const hasDraft = Boolean(title.trim() || file || recoveredFileName || pasteSections.length);
 
   return (
-    <div className="page-wrap upload-page streamlined-builder-page">
-      <div className="page-head">
+    <div className="page-wrap upload-page streamlined-builder-page cleaner-create-page">
+      <div className="page-head create-page-head">
         <div>
           <p className="eyebrow">CREATE STUDY SET</p>
-          <h1>Import a PDF or build it manually</h1>
-          <p>Use a text-based PDF, or add questions one by one in the manual builder.</p>
+          <h1>{mode === "pdf" ? "Import a PDF" : "Build questions manually"}</h1>
+          <p>{mode === "pdf" ? "Upload a text-based question bank and review it before saving." : "Add one question at a time without the PDF-import controls getting in the way."}</p>
         </div>
-        <button className="ghost-button" type="button" onClick={onCancel}>Cancel</button>
+        <div className="create-page-actions">
+          <button className="ghost-button" type="button" onClick={onCancel}>Cancel</button>
+          {hasDraft && (
+            <details className="page-actions-menu">
+              <summary aria-label="Creation options"><span className="kebab-dots" aria-hidden="true">⋮</span></summary>
+              <div className="menu-popover page-menu-popover">
+                <button type="button" className="danger-menu-item" onClick={onClearDraft}><Trash2 size={16} /> Clear saved draft</button>
+              </div>
+            </details>
+          )}
+        </div>
       </div>
 
-      {recoveredFileName && !file && <div className="recovery-note"><ArchiveRestore size={18} /><span><strong>Draft restored.</strong> Your manual questions were recovered. Reselect “{recoveredFileName}” only if you still want to import that PDF.</span></div>}
+      {mode === "pdf" && recoveredFileName && !file && <div className="recovery-note"><ArchiveRestore size={18} /><span><strong>Draft restored.</strong> Reselect “{recoveredFileName}” to continue the PDF import.</span></div>}
       {error && <div className="error-banner"><X size={18} /><span>{error}</span></div>}
 
-      <section className="streamlined-create-panel">
+      <section className="streamlined-create-panel cleaner-create-panel">
+        <div className="creation-mode-tabs" role="tablist" aria-label="Study set creation method">
+          <button type="button" role="tab" aria-selected={mode === "pdf"} className={mode === "pdf" ? "active" : ""} onClick={() => onMode("pdf")}>
+            <FileText size={19} /><span><strong>Upload PDF</strong><small>Import an existing question bank</small></span>
+          </button>
+          <button type="button" role="tab" aria-selected={mode === "manual"} className={mode === "manual" ? "active" : ""} onClick={() => onMode("manual")}>
+            <Keyboard size={19} /><span><strong>Manual builder</strong><small>Create questions one by one</small></span>
+          </button>
+        </div>
+
         <label className="field-label" htmlFor="set-title">Study set title</label>
-        <input id="set-title" className="text-input set-title-input" value={title} onChange={(event) => onTitle(event.target.value)} placeholder="Example: Biology Midterm Reviewer" />
+        <input id="set-title" className="text-input set-title-input content-text" value={title} onChange={(event) => onTitle(event.target.value)} placeholder="Example: Biology Midterm Reviewer" />
 
-        <div
-          className={`drop-zone compact-drop-zone ${dragging ? "dragging" : ""}`}
-          onDragOver={(event) => { event.preventDefault(); onDragging(true); }}
-          onDragLeave={() => onDragging(false)}
-          onDrop={(event) => { event.preventDefault(); onDragging(false); acceptFile(event.dataTransfer.files?.[0]); }}
-        >
-          <input ref={fileInputRef} type="file" accept="application/pdf,.pdf" onChange={(event) => acceptFile(event.target.files?.[0])} />
-          <div className="drop-zone-copy">
-            <span className="big-upload"><Upload size={24} /></span>
-            <span><strong>{file ? file.name : "Drop a text-based PDF here"}</strong><small>{file ? `${Math.max(0.1, file.size / 1024 / 1024).toFixed(1)} MB · ready to import` : "or browse your computer"}</small></span>
+        {mode === "pdf" ? (
+          <div className="creation-workflow pdf-creation-workflow">
+            <div
+              className={`drop-zone compact-drop-zone focused-drop-zone ${dragging ? "dragging" : ""}`}
+              onDragOver={(event) => { event.preventDefault(); onDragging(true); }}
+              onDragLeave={() => onDragging(false)}
+              onDrop={(event) => { event.preventDefault(); onDragging(false); acceptFile(event.dataTransfer.files?.[0]); }}
+            >
+              <input ref={fileInputRef} type="file" accept="application/pdf,.pdf" onChange={(event) => acceptFile(event.target.files?.[0])} />
+              <div className="drop-zone-copy">
+                <span className="big-upload"><Upload size={24} /></span>
+                <span><strong>{file ? file.name : "Drop a text-based PDF here"}</strong><small>{file ? `${Math.max(0.1, file.size / 1024 / 1024).toFixed(1)} MB · ready to import` : "or browse your computer"}</small></span>
+              </div>
+              <div className="drop-zone-actions">
+                {file && <button className="icon-button" type="button" aria-label="Remove PDF" onClick={() => onFile(null)}><X size={16} /></button>}
+                <button className="secondary-button compact" type="button" onClick={() => fileInputRef.current?.click()}>{file ? "Replace" : "Browse PDF"}</button>
+              </div>
+            </div>
+
+            <div className="workflow-action-bar pdf-action-bar">
+              <div><strong>{file ? "PDF ready" : "No PDF selected"}</strong><small>{file ? "QuizForge will validate the extracted questions before saving." : "Image-only scans will show an OCR warning only after they are detected."}</small></div>
+              <button className="primary-button" type="button" disabled={!file} onClick={onCreate}><Sparkles size={17} /> Review PDF import <ChevronRight size={16} /></button>
+            </div>
           </div>
-          <div className="drop-zone-actions">
-            {file && <button className="icon-button" type="button" aria-label="Remove PDF" onClick={() => onFile(null)}><X size={16} /></button>}
-            <button className="secondary-button compact" type="button" onClick={() => fileInputRef.current?.click()}>{file ? "Replace" : "Browse PDF"}</button>
-          </div>
-        </div>
-        <p className="scan-coming-soon"><AlertTriangle size={14} /> Scanned-image PDF OCR is temporarily unavailable. Text-based PDFs work normally.</p>
+        ) : (
+          <div className="creation-workflow manual-creation-workflow">
+            <div className="manual-builder-heading simplified-heading compact-manual-heading">
+              <div>
+                <p className="eyebrow">MANUAL BUILDER</p>
+                <h2>Add questions one at a time.</h2>
+                <p>Only the question you are editing stays open. Optional details remain hidden until needed.</p>
+              </div>
+            </div>
 
-        <div className="or-divider"><span>or build questions manually</span></div>
-
-        <div className="manual-builder-heading simplified-heading">
-          <div>
-            <p className="eyebrow">MANUAL BUILDER</p>
-            <h2>Questions stay compact until you open them.</h2>
-            <p>Only one question opens at a time, so long reviewers remain easy to scan.</p>
-          </div>
-          {expandedCount > 0 && <button className="text-button" type="button" onClick={() => pasteSections.forEach((section) => onUpdatePasteSection(section.id, { expanded: false }))}>Collapse all</button>}
-        </div>
-
-        <div className="manual-question-list accordion-list">
-          {pasteSections.map((section, index) => {
-            const answerCount = section.answers.filter((answer) => answer.text.trim()).length;
-            const correctCount = section.answers.filter((answer) => answer.correct).length;
-            const complete = Boolean(section.question.trim().length >= 3 && answerCount >= 2 && correctCount > 0);
-            const summary = section.question.trim() || "Untitled question";
-            return (
-              <article className={`manual-question-card accordion-card ${section.expanded ? "expanded" : "collapsed"}`} key={section.id}>
-                <div className="manual-question-head accordion-head">
-                  <button className="manual-question-toggle" type="button" onClick={() => onUpdatePasteSection(section.id, { expanded: !section.expanded })} aria-expanded={section.expanded}>
-                    <span className="manual-question-number">{index + 1}</span>
-                    <span className="manual-question-summary">
-                      <strong>Question {index + 1}</strong>
-                      <b>{summary}</b>
-                      <small>{answerCount} choice{answerCount === 1 ? "" : "s"} · {correctCount ? `${correctCount} correct` : "correct answer not selected"}</small>
-                    </span>
-                    <span className={`question-completion ${complete ? "complete" : "needs"}`}>{complete ? <CheckCircle2 size={15} /> : <CircleHelp size={15} />}{complete ? "Complete" : "Needs attention"}</span>
-                    <ChevronRight className={`accordion-chevron ${section.expanded ? "open" : ""}`} size={18} />
-                  </button>
-                  <button className="remove-section-button" type="button" aria-label={`Remove question ${index + 1}`} onClick={() => onRemovePasteSection(section.id)}><Trash2 size={17} /></button>
-                </div>
-
-                {section.expanded && (
-                  <div className="accordion-content">
-                    <div className="manual-question-tabs" role="tablist" aria-label={`Question ${index + 1} editor tabs`}>
-                      <button type="button" role="tab" aria-selected={section.activeTab === "question"} className={section.activeTab === "question" ? "active" : ""} onClick={() => onUpdatePasteSection(section.id, { activeTab: "question", expanded: true })}><CircleHelp size={17} /> Question</button>
-                      <button type="button" role="tab" aria-selected={section.activeTab === "answers"} className={section.activeTab === "answers" ? "active" : ""} onClick={() => onUpdatePasteSection(section.id, { activeTab: "answers", expanded: true })}><CheckCircle2 size={17} /> Answers <span>{section.answers.length}</span></button>
-                    </div>
-
-                    {section.activeTab === "question" ? (
-                      <div className="manual-tab-panel question-tab-panel" role="tabpanel">
-                        <label className="field-label" htmlFor={`manual-question-${section.id}`}>Question text</label>
-                        <textarea id={`manual-question-${section.id}`} className="manual-question-input" value={section.question} onChange={(event) => onUpdatePasteSection(section.id, { question: event.target.value })} placeholder="Example: What is the capital of Japan?" />
-                        <label className="single-meta-field"><span>Topic</span><input className="text-input" value={section.topic} onChange={(event) => onUpdatePasteSection(section.id, { topic: event.target.value })} placeholder="General" /></label>
-                        <div className="manual-panel-footer"><span>Saved automatically in this browser.</span><button className="primary-button compact" type="button" onClick={() => onUpdatePasteSection(section.id, { activeTab: "answers", expanded: true })}>Continue to answers <ChevronRight size={16} /></button></div>
+            {pasteSections.length === 0 ? (
+              <div className="manual-empty-state">
+                <span><Plus size={23} /></span>
+                <h3>No draft questions yet</h3>
+                <p>Start with Question 1, then add the answer choices and select the correct answer.</p>
+                <button className="primary-button" type="button" onClick={onAddPasteSection}><Plus size={17} /> Add question</button>
+              </div>
+            ) : (
+              <div className="manual-question-list accordion-list cleaner-accordion-list">
+                {pasteSections.map((section, index) => {
+                  const answerCount = section.answers.filter((answer) => answer.text.trim()).length;
+                  const correctCount = section.answers.filter((answer) => answer.text.trim() && answer.correct).length;
+                  const complete = isPasteSectionReady(section);
+                  const summary = section.question.trim() || "Untitled question";
+                  return (
+                    <article className={`manual-question-card accordion-card ${section.expanded ? "expanded" : "collapsed"}`} key={section.id}>
+                      <div className="manual-question-head accordion-head streamlined-question-head">
+                        <button className="manual-question-toggle" type="button" onClick={() => onUpdatePasteSection(section.id, { expanded: !section.expanded })} aria-expanded={section.expanded}>
+                          <span className="manual-question-number">{index + 1}</span>
+                          <span className="manual-question-summary content-text">
+                            <strong>Question {index + 1}</strong>
+                            <b>{summary}</b>
+                            <small>{answerCount} choice{answerCount === 1 ? "" : "s"} · {correctCount ? `${correctCount} correct` : "correct answer not selected"}</small>
+                          </span>
+                          <span className={`question-completion ${complete ? "complete" : "needs"}`}>{complete ? <CheckCircle2 size={15} /> : <CircleHelp size={15} />}{complete ? "Ready" : "Needs attention"}</span>
+                        </button>
+                        <details className="manual-card-menu">
+                          <summary aria-label={`Question ${index + 1} options`}><span className="kebab-dots" aria-hidden="true">⋮</span></summary>
+                          <div className="menu-popover manual-menu-popover">
+                            <button type="button" className="danger-menu-item" onClick={() => onRemovePasteSection(section.id)}><Trash2 size={16} /> Delete question</button>
+                          </div>
+                        </details>
                       </div>
-                    ) : (
-                      <div className="manual-tab-panel answers-tab-panel" role="tabpanel">
-                        <div className="manual-answers-toolbar">
-                          <div><strong>Answer choices</strong><small>Choose whether one or several answers are correct.</small></div>
-                          <div className="manual-mode-toggle" aria-label="Correct-answer mode"><button type="button" className={section.selectionMode === "single" ? "active" : ""} onClick={() => setSelectionMode(section, "single")}>Single correct</button><button type="button" className={section.selectionMode === "multiple" ? "active" : ""} onClick={() => setSelectionMode(section, "multiple")}>Multiple correct</button></div>
-                        </div>
-                        <div className="manual-answer-list">
-                          {section.answers.map((answer, answerIndex) => (
-                            <div className={`manual-answer-row ${answer.correct ? "correct" : ""}`} key={answer.id}>
-                              <span className="manual-answer-letter">{String.fromCharCode(65 + answerIndex)}</span>
-                              <input value={answer.text} onChange={(event) => updateAnswer(section, answer.id, { text: event.target.value })} placeholder={`Answer choice ${String.fromCharCode(65 + answerIndex)}`} aria-label={`Question ${index + 1} answer ${String.fromCharCode(65 + answerIndex)}`} />
-                              <button className={`manual-correct-button ${answer.correct ? "selected" : ""}`} type="button" onClick={() => toggleCorrect(section, answer.id)} aria-label={answer.correct ? "Unmark correct answer" : "Mark correct answer"}><Check size={17} /><span>{answer.correct ? "Correct" : "Mark correct"}</span></button>
-                              <button className="manual-remove-answer" type="button" disabled={section.answers.length <= 2} onClick={() => removeAnswer(section, answer.id)} aria-label={`Remove answer ${String.fromCharCode(65 + answerIndex)}`}><X size={16} /></button>
+
+                      {section.expanded && (
+                        <div className="accordion-content">
+                          <div className="manual-question-tabs" role="tablist" aria-label={`Question ${index + 1} editor tabs`}>
+                            <button type="button" role="tab" aria-selected={section.activeTab === "question"} className={section.activeTab === "question" ? "active" : ""} onClick={() => onUpdatePasteSection(section.id, { activeTab: "question", expanded: true })}><CircleHelp size={17} /> Question</button>
+                            <button type="button" role="tab" aria-selected={section.activeTab === "answers"} className={section.activeTab === "answers" ? "active" : ""} onClick={() => onUpdatePasteSection(section.id, { activeTab: "answers", expanded: true })}><CheckCircle2 size={17} /> Answers <span>{section.answers.length}</span></button>
+                          </div>
+
+                          {section.activeTab === "question" ? (
+                            <div className="manual-tab-panel question-tab-panel" role="tabpanel">
+                              <label className="field-label" htmlFor={`manual-question-${section.id}`}>Question text</label>
+                              <textarea id={`manual-question-${section.id}`} className="manual-question-input content-text" value={section.question} onChange={(event) => onUpdatePasteSection(section.id, { question: event.target.value })} placeholder="Example: What is the capital of Japan?" />
+
+                              <details className="manual-optional-details" defaultOpen={Boolean(section.explanation.trim() || (section.topic.trim() && section.topic.trim().toLowerCase() !== "general"))}>
+                                <summary><Plus size={15} /><span>Add topic or explanation</span><ChevronDown size={16} /></summary>
+                                <div className="manual-optional-fields">
+                                  <label><span>Topic</span><input className="text-input content-text" value={section.topic} onChange={(event) => onUpdatePasteSection(section.id, { topic: event.target.value })} placeholder="General" /></label>
+                                  <label><span>Explanation</span><textarea className="manual-explanation-input content-text" value={section.explanation} onChange={(event) => onUpdatePasteSection(section.id, { explanation: event.target.value })} placeholder="Optional explanation shown during answer review" /></label>
+                                </div>
+                              </details>
+
+                              <div className="manual-panel-footer"><span>Saved automatically in this browser.</span><button className="primary-button compact" type="button" onClick={() => onUpdatePasteSection(section.id, { activeTab: "answers", expanded: true })}>Continue to answers <ChevronRight size={16} /></button></div>
                             </div>
-                          ))}
+                          ) : (
+                            <div className="manual-tab-panel answers-tab-panel" role="tabpanel">
+                              <div className="manual-answers-toolbar">
+                                <div><strong>Answer choices</strong><small>Choose whether one or several answers are correct.</small></div>
+                                <div className="manual-mode-toggle" aria-label="Correct-answer mode"><button type="button" className={section.selectionMode === "single" ? "active" : ""} onClick={() => setSelectionMode(section, "single")}>Single correct</button><button type="button" className={section.selectionMode === "multiple" ? "active" : ""} onClick={() => setSelectionMode(section, "multiple")}>Multiple correct</button></div>
+                              </div>
+                              <div className="manual-answer-list">
+                                {section.answers.map((answer, answerIndex) => (
+                                  <div className={`manual-answer-row ${answer.correct ? "correct" : ""}`} key={answer.id}>
+                                    <span className="manual-answer-letter">{String.fromCharCode(65 + answerIndex)}</span>
+                                    <input className="manual-answer-input content-text" value={answer.text} onChange={(event) => updateAnswer(section, answer.id, { text: event.target.value })} placeholder={`Answer choice ${String.fromCharCode(65 + answerIndex)}`} aria-label={`Question ${index + 1} answer ${String.fromCharCode(65 + answerIndex)}`} />
+                                    <button className={`manual-correct-button ${answer.correct ? "selected" : ""}`} type="button" onClick={() => toggleCorrect(section, answer.id)} aria-label={answer.correct ? "Unmark correct answer" : "Mark correct answer"}><Check size={17} /><span>{answer.correct ? "Correct" : "Mark correct"}</span></button>
+                                    <button className="manual-remove-answer" type="button" disabled={section.answers.length <= 2} onClick={() => removeAnswer(section, answer.id)} aria-label={`Remove answer ${String.fromCharCode(65 + answerIndex)}`}><X size={16} /></button>
+                                  </div>
+                                ))}
+                              </div>
+                              <button className="add-answer-button" type="button" onClick={() => addAnswer(section)}><Plus size={17} /> Add answer choice</button>
+                              <div className="manual-panel-footer"><button className="text-button" type="button" onClick={() => onUpdatePasteSection(section.id, { activeTab: "question", expanded: true })}><ChevronLeft size={15} /> Back to question</button><button className="secondary-button compact" type="button" onClick={() => onUpdatePasteSection(section.id, { expanded: false })}>Done with question {index + 1}</button></div>
+                            </div>
+                          )}
                         </div>
-                        <button className="add-answer-button" type="button" onClick={() => addAnswer(section)}><Plus size={17} /> Add answer choice</button>
-                        <div className="manual-panel-footer"><button className="text-button" type="button" onClick={() => onUpdatePasteSection(section.id, { activeTab: "question", expanded: true })}><ChevronLeft size={15} /> Back to question</button><button className="secondary-button compact" type="button" onClick={() => onUpdatePasteSection(section.id, { expanded: false })}>Done with question {index + 1}</button></div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </article>
-            );
-          })}
-        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            )}
 
-        <button className={`add-manual-question-button simple-add-question ${pasteSections.length === 0 ? "empty" : ""}`} type="button" onClick={onAddPasteSection}><Plus size={18} /><strong>Add question</strong></button>
-
-        <label className="switch-row ai-import-switch ai-import-disabled" aria-disabled="true">
-          <span><Bot size={19} /><span><strong>AI import assistance <span className="feature-unavailable-badge">Unavailable for now</span></strong><small>Local PDF extraction remains available. AI repair and verification are temporarily disabled.</small></span></span>
-          <input type="checkbox" checked={false} disabled aria-label="AI import assistance is temporarily unavailable" />
-        </label>
-
-        <div className="create-builder-footer">
-          <div><strong>{file ? "PDF ready" : `${completedSections} manual question${completedSections === 1 ? "" : "s"}`}</strong><small>Your document and draft stay local in this browser.</small></div>
-          <button className="primary-button create-button" type="button" onClick={onCreate}><Sparkles size={18} /> Review study set <ChevronRight size={17} /></button>
-        </div>
-        {(title.trim() || completedSections || file) && <button className="text-button clear-draft-button" type="button" onClick={onClearDraft}>Clear saved draft</button>}
+            {pasteSections.length > 0 && (
+              <div className="manual-sticky-action-bar">
+                <div><strong>{draftCount} draft question{draftCount === 1 ? "" : "s"} · {readyCount} ready</strong><small>{readyCount ? "Ready questions can now be reviewed before saving." : "Complete a question and select its correct answer first."}</small></div>
+                <div className="manual-sticky-actions">
+                  <button className="secondary-button" type="button" onClick={onAddPasteSection}><Plus size={16} /> Add question</button>
+                  <button className="primary-button" type="button" disabled={readyCount === 0} onClick={onCreate}><Sparkles size={17} /> Review study set <ChevronRight size={16} /></button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </section>
     </div>
   );
 }
-
 
 function ProcessingView({ fileName, progress, step, activeLabel }: { fileName: string; progress: number; step: ProcessingStep; activeLabel: string }) {
   const steps: Array<{ id: ProcessingStep; label: string }> = [

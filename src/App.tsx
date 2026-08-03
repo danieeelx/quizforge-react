@@ -216,6 +216,17 @@ function isPasteSectionReady(section: PasteSection): boolean {
   return section.question.trim().length >= 3 && enteredAnswers.length >= 2 && correctAnswers.length > 0;
 }
 
+function getPasteSectionStatus(section: PasteSection): "empty" | "incomplete" | "ready" {
+  const hasStarted = Boolean(
+    section.question.trim()
+    || section.answers.some((answer) => answer.text.trim() || answer.correct)
+    || section.explanation.trim()
+    || (section.topic.trim() && section.topic.trim().toLowerCase() !== "general")
+  );
+  if (!hasStarted) return "empty";
+  return isPasteSectionReady(section) ? "ready" : "incomplete";
+}
+
 function getCorrectIds(question: Question): string[] {
   if (Array.isArray(question.correctOptionIds) && question.correctOptionIds.length) return question.correctOptionIds;
   return question.correctOptionId ? [question.correctOptionId] : [];
@@ -1845,7 +1856,8 @@ function UploadView({
                 {pasteSections.map((section, index) => {
                   const answerCount = section.answers.filter((answer) => answer.text.trim()).length;
                   const correctCount = section.answers.filter((answer) => answer.text.trim() && answer.correct).length;
-                  const complete = isPasteSectionReady(section);
+                  const completionState = getPasteSectionStatus(section);
+                  const complete = completionState === "ready";
                   const summary = section.question.trim() || "Untitled question";
                   return (
                     <article className={`manual-question-card accordion-card ${section.expanded ? "expanded" : "collapsed"}`} key={section.id}>
@@ -1857,7 +1869,7 @@ function UploadView({
                             <b>{summary}</b>
                             <small>{answerCount} choice{answerCount === 1 ? "" : "s"} · {correctCount ? `${correctCount} correct` : "correct answer not selected"}</small>
                           </span>
-                          <span className={`question-completion ${complete ? "complete" : "needs"}`}>{complete ? <CheckCircle2 size={15} /> : <CircleHelp size={15} />}{complete ? "Ready" : "Needs attention"}</span>
+                          {completionState !== "empty" && <span aria-live="polite" className={`question-completion ${complete ? "complete" : "needs"}`}>{complete ? <CheckCircle2 size={15} /> : <CircleHelp size={15} />}{complete ? "Ready" : "Needs attention"}</span>}
                         </button>
                         <details className="manual-card-menu">
                           <summary aria-label={`Question ${index + 1} options`}><span className="kebab-dots" aria-hidden="true">⋮</span></summary>

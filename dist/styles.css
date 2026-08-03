@@ -1920,3 +1920,111 @@ button,select,label,summary,.brand,.eyebrow,.pill,.status,h1,h2,h3,h4,h5,h6,
   }
   .creation-mode-tabs small{display:none}
 }
+
+
+/* QuizForge v3.3.2 — neutral empty drafts and vertically centered question menu. */
+.manual-card-menu{
+  align-self:stretch;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:7px 10px 0 0;
+}
+.manual-card-menu>summary{flex:0 0 auto}
+@media(max-width:760px){
+  .manual-card-menu{padding:5px 6px 0 0}
+}
+
+/* QuizForge v3.3.3 — larger manual-question header and true action centering. */
+.streamlined-question-head{
+  grid-template-columns:minmax(0,1fr) 64px;
+  align-items:center;
+  min-height:96px;
+}
+.streamlined-question-head .manual-question-toggle{
+  min-height:96px;
+  grid-template-columns:52px minmax(0,1fr) auto;
+  gap:15px;
+  padding:17px 14px 17px 18px;
+}
+.streamlined-question-head .manual-question-number{
+  width:48px;
+  height:48px;
+  border-radius:15px;
+  font-size:16px;
+}
+.streamlined-question-head .manual-question-summary strong{
+  font-size:13px;
+  margin-bottom:3px;
+}
+.streamlined-question-head .manual-question-summary b{
+  font-size:17px;
+  line-height:1.38;
+}
+.streamlined-question-head .manual-question-summary small{
+  margin-top:5px;
+  font-size:12px;
+  line-height:1.45;
+}
+.streamlined-question-head .question-completion{
+  min-height:34px;
+  gap:7px;
+  padding:8px 12px;
+  font-size:11px;
+}
+.streamlined-question-head .question-completion svg{
+  width:16px;
+  height:16px;
+}
+.manual-card-menu{
+  align-self:center;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  height:48px;
+  padding:0 12px 0 0;
+  transform:translateY(7px);
+}
+.manual-card-menu>summary{
+  width:46px;
+  height:46px;
+  border-radius:14px;
+}
+.manual-card-menu .kebab-dots{
+  font-size:25px;
+  transform:translateY(-1px);
+}
+.manual-menu-popover{
+  top:calc(50% + 30px);
+  right:12px;
+}
+
+@media(max-width:760px){
+  .streamlined-question-head{
+    grid-template-columns:minmax(0,1fr) 56px;
+    min-height:88px;
+  }
+  .streamlined-question-head .manual-question-toggle{
+    min-height:88px;
+    grid-template-columns:46px minmax(0,1fr);
+    gap:12px;
+    padding:15px 8px 15px 14px;
+  }
+  .streamlined-question-head .manual-question-number{
+    width:44px;
+    height:44px;
+    font-size:15px;
+  }
+  .streamlined-question-head .manual-question-summary b{font-size:16px}
+  .streamlined-question-head .manual-question-summary small{font-size:11px}
+  .manual-card-menu{
+    height:46px;
+    padding:0 7px 0 0;
+    transform:translateY(5px);
+  }
+  .manual-card-menu>summary{
+    width:44px;
+    height:44px;
+  }
+  .manual-card-menu .kebab-dots{font-size:24px}
+}

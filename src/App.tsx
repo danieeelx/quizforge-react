@@ -280,7 +280,7 @@ function App() {
   const [recoveredFileName, setRecoveredFileName] = useState(initialUploadDraft?.fileName ?? "");
   const [pasteSections, setPasteSections] = useState<PasteSection[]>(() => normalizePasteSections(initialUploadDraft?.pasteSections));
   const [studyTitle, setStudyTitle] = useState(initialUploadDraft?.title ?? "");
-  const [aiEnhanced, setAiEnhanced] = useState(initialUploadDraft?.aiEnhanced ?? false);
+  const [aiEnhanced, setAiEnhanced] = useState(false);
   const [ocrEnabled] = useState(false);
   const [aiConfigured, setAiConfigured] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -1859,10 +1859,13 @@ function UploadView({
 
         <button className={`add-manual-question-button simple-add-question ${pasteSections.length === 0 ? "empty" : ""}`} type="button" onClick={onAddPasteSection}><Plus size={18} /><strong>Add question</strong></button>
 
-        {aiConfigured && <label className="switch-row ai-import-switch"><span><Bot size={19} /><span><strong>AI import assistance</strong><small>Review the local extraction, repair clear formatting problems, add confidence notes, and flag uncertain answers before saving.</small></span></span><input type="checkbox" checked={aiEnhanced} onChange={(event) => onAi(event.target.checked)} /></label>}
+        <label className="switch-row ai-import-switch ai-import-disabled" aria-disabled="true">
+          <span><Bot size={19} /><span><strong>AI import assistance <span className="feature-unavailable-badge">Unavailable for now</span></strong><small>Local PDF extraction remains available. AI repair and verification are temporarily disabled.</small></span></span>
+          <input type="checkbox" checked={false} disabled aria-label="AI import assistance is temporarily unavailable" />
+        </label>
 
         <div className="create-builder-footer">
-          <div><strong>{file ? "PDF ready" : `${completedSections} manual question${completedSections === 1 ? "" : "s"}`}</strong><small>{aiEnhanced ? "AI assistance is enabled; extracted text will be sent securely to your server-side AI endpoint." : "Your document and draft stay local in this browser."}</small></div>
+          <div><strong>{file ? "PDF ready" : `${completedSections} manual question${completedSections === 1 ? "" : "s"}`}</strong><small>Your document and draft stay local in this browser.</small></div>
           <button className="primary-button create-button" type="button" onClick={onCreate}><Sparkles size={18} /> Review study set <ChevronRight size={17} /></button>
         </div>
         {(title.trim() || completedSections || file) && <button className="text-button clear-draft-button" type="button" onClick={onClearDraft}>Clear saved draft</button>}

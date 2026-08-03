@@ -41,3 +41,13 @@ Upload the contents of the v3.0.1 update folder to the repository root. The impo
 5. Refresh with `Ctrl + Shift + R`.
 
 No Vercel setting changes are required. Existing browser data is preserved. Source-page viewing becomes available for PDFs imported after v3.2.
+
+
+## v3.2.1
+
+1. Extract `quizforge-vercel-update-v3.2.1.zip`.
+2. Upload everything inside the extracted folder to the existing repository.
+3. Commit with `Update QuizForge to v3.2.1`.
+4. Wait for Vercel to redeploy, then hard-refresh the site.
+
+This update temporarily disables AI Import Assistance and fixes manual-builder trash-button spacing. No Vercel setting changes are required.

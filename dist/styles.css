@@ -1623,3 +1623,47 @@ button,select,label,summary,.brand,.eyebrow,.pill,.status,h1,h2,h3,h4,h5,h6,
   .accordion-head{grid-template-columns:minmax(0,1fr) 44px}
   .accordion-head .remove-section-button{width:36px;height:36px;margin:0}
 }
+
+
+/* QuizForge v3.2.1 — temporarily disable AI import and give destructive actions safe spacing. */
+.ai-import-disabled{
+  border-color:var(--line);
+  background:var(--surface-soft);
+  opacity:.72;
+  cursor:not-allowed;
+  filter:saturate(.55);
+}
+.ai-import-disabled>span>svg{color:var(--muted)}
+.ai-import-disabled input{pointer-events:none}
+.feature-unavailable-badge{
+  display:inline-flex;
+  align-items:center;
+  margin-left:8px;
+  padding:4px 7px;
+  border:1px solid var(--line);
+  border-radius:999px;
+  background:var(--surface-solid);
+  color:var(--muted);
+  font-family:var(--font-display);
+  font-size:8px;
+  font-style:normal;
+  font-weight:600;
+  letter-spacing:.055em;
+  vertical-align:middle;
+}
+
+/* Keep the trash action away from the accordion divider and card edge. */
+.accordion-head{
+  padding:7px 14px 17px 0;
+}
+.accordion-head .remove-section-button{
+  align-self:start;
+  justify-self:center;
+  margin:13px 0 0;
+}
+
+@media(max-width:760px){
+  .feature-unavailable-badge{display:flex;width:max-content;margin:6px 0 0}
+  .accordion-head{padding:5px 10px 14px 0}
+  .accordion-head .remove-section-button{margin-top:10px}
+}

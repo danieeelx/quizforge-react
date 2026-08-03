@@ -439,7 +439,6 @@ body{font-size:16px;line-height:1.6}
 
 /* QuizForge v2.6 — streamlined interface and accordion question builder */
 .streamlined-sidebar .side-nav{margin-bottom:18px}
-.sidebar-create-button{width:100%;margin-top:8px}
 .sidebar-spacer{flex:1}
 .local-workspace-note{display:flex;align-items:center;gap:7px;margin:18px 8px 2px;color:var(--muted);font-size:11px;line-height:1.45}
 .local-workspace-note svg{color:var(--green);flex:0 0 auto}
@@ -535,7 +534,6 @@ body{font-size:16px;line-height:1.6}
 }
 
 @media(max-width:760px){
-  .sidebar-create-button{margin-top:14px}
   .local-workspace-note{margin-top:auto}
   .streamlined-hero{grid-template-columns:1fr}
   .streamlined-hero .upload-visual{display:none}
@@ -660,11 +658,6 @@ body{font-size:16px;line-height:1.6}
   min-height:46px;
   padding:12px 14px;
   font-weight:600;
-}
-.sidebar-create-button{
-  min-height:46px;
-  margin:6px 0 20px;
-  font-weight:650;
 }
 .sidebar-spacer{
   min-height:24px;
@@ -1572,4 +1565,61 @@ button,select,label,summary,.brand,.eyebrow,.pill,.status,h1,h2,h3,h4,h5,h6,
   .library-row-actions{grid-column:1/-1}
   .results-filter-bar{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.results-filter-bar button{justify-content:space-between}
   .result-stats{grid-template-columns:1fr 1fr}
+}
+
+/* QuizForge v3.2 — remove redundant creation controls and start manual builder empty. */
+.streamlined-sidebar .sidebar-spacer{
+  flex:1;
+}
+
+.simple-add-question{
+  width:100%;
+  min-height:52px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:9px;
+  margin:18px 0 22px;
+  border:1px dashed color-mix(in srgb,var(--primary) 45%,var(--line));
+  border-radius:15px;
+  background:transparent;
+  color:var(--primary);
+  font-family:var(--font-display);
+  font-size:13px;
+  font-weight:650;
+  letter-spacing:.035em;
+  transition:border-color .18s ease,background .18s ease,transform .18s ease;
+}
+.simple-add-question:hover{
+  border-color:var(--primary);
+  background:var(--primary-soft);
+  transform:translateY(-1px);
+}
+.simple-add-question.empty{
+  margin-top:8px;
+  min-height:58px;
+}
+
+.accordion-head{
+  grid-template-columns:minmax(0,1fr) 48px;
+  align-items:stretch;
+  gap:0;
+}
+.accordion-head .remove-section-button{
+  align-self:center;
+  justify-self:center;
+  width:38px;
+  height:38px;
+  margin:0;
+  padding:0;
+  line-height:0;
+}
+.accordion-head .remove-section-button svg{
+  display:block;
+  margin:auto;
+}
+
+@media(max-width:760px){
+  .accordion-head{grid-template-columns:minmax(0,1fr) 44px}
+  .accordion-head .remove-section-button{width:36px;height:36px;margin:0}
 }

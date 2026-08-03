@@ -32,12 +32,12 @@ Upload all contents of the v3.0 update folder to the repository root, commit, wa
 Upload the contents of the v3.0.1 update folder to the repository root. The important live-site replacement is `dist/App.js`.
 
 
-## v3.1
+## v3.2
 
-1. Extract `quizforge-vercel-update-v3.1.zip`.
+1. Extract `quizforge-vercel-update-v3.2.zip`.
 2. Upload everything inside the extracted folder to the repository root.
-3. Commit with `Update QuizForge to v3.1`.
+3. Commit with `Update QuizForge to v3.2`.
 4. Wait for Vercel to redeploy.
 5. Refresh with `Ctrl + Shift + R`.
 
-No Vercel setting changes are required. Existing browser data is preserved. Source-page viewing becomes available for PDFs imported after v3.1.
+No Vercel setting changes are required. Existing browser data is preserved. Source-page viewing becomes available for PDFs imported after v3.2.

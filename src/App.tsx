@@ -142,7 +142,7 @@ function createPasteSection(): PasteSection {
 }
 
 function normalizePasteSections(rawSections: unknown): PasteSection[] {
-  if (!Array.isArray(rawSections) || rawSections.length === 0) return [createPasteSection()];
+  if (!Array.isArray(rawSections) || rawSections.length === 0) return [];
 
   const normalized = rawSections.map((rawValue) => {
     const raw = (rawValue && typeof rawValue === "object" ? rawValue : {}) as Record<string, unknown>;
@@ -191,9 +191,17 @@ function normalizePasteSections(rawSections: unknown): PasteSection[] {
     };
   });
 
-  if (!normalized.length) return [createPasteSection()];
-  const firstExpanded = normalized.findIndex((section) => section.expanded);
-  return normalized.map((section, index) => ({ ...section, expanded: firstExpanded === -1 ? index === 0 : index === firstExpanded }));
+  const withContent = normalized.filter((section) =>
+    Boolean(
+      section.title.trim()
+      || section.question.trim()
+      || section.answers.some((answer) => answer.text.trim())
+      || (section.topic.trim() && section.topic.trim().toLowerCase() !== "general")
+    )
+  );
+  if (!withContent.length) return [];
+  const firstExpanded = withContent.findIndex((section) => section.expanded);
+  return withContent.map((section, index) => ({ ...section, expanded: firstExpanded === -1 ? index === 0 : index === firstExpanded }));
 }
 
 
@@ -423,7 +431,7 @@ function App() {
   function clearStudyDraft() {
     setSelectedFile(null);
     setRecoveredFileName("");
-    setPasteSections([createPasteSection()]);
+    setPasteSections([]);
     setStudyTitle("");
     setAiEnhanced(false);
     clearUploadDraft();
@@ -469,9 +477,7 @@ function App() {
   }
 
   function removePasteSection(id: string) {
-    setPasteSections((current) => current.length === 1
-      ? [createPasteSection()]
-      : current.filter((section) => section.id !== id));
+    setPasteSections((current) => current.filter((section) => section.id !== id));
   }
 
   async function createStudySet() {
@@ -1342,7 +1348,6 @@ function App() {
           onToggleSidebar={() => setSidebarOpen((current) => !current)}
           onNavigate={navigate}
           onTheme={toggleTheme}
-          onNew={newStudySet}
           autosaveState={autosaveState}
           lastSavedAt={lastSavedAt}
         >
@@ -1477,12 +1482,11 @@ interface ShellProps {
   onToggleSidebar: () => void;
   onNavigate: (view: View) => void;
   onTheme: () => void;
-  onNew: () => void;
   autosaveState: AutosaveState;
   lastSavedAt: Date | null;
 }
 
-function Shell({ view, theme, sidebarOpen, children, onToggleSidebar, onNavigate, onTheme, onNew, autosaveState, lastSavedAt }: ShellProps) {
+function Shell({ view, theme, sidebarOpen, children, onToggleSidebar, onNavigate, onTheme, autosaveState, lastSavedAt }: ShellProps) {
   const nav = [
     { id: "dashboard" as View, label: "Home", icon: Home },
     { id: "library" as View, label: "Library", icon: Library },
@@ -1503,7 +1507,6 @@ function Shell({ view, theme, sidebarOpen, children, onToggleSidebar, onNavigate
             return <button key={item.id} type="button" className={`nav-item ${view === item.id ? "active" : ""}`} onClick={() => onNavigate(item.id)}><Icon size={18} /><span>{item.label}</span></button>;
           })}
         </nav>
-        <button className="primary-button sidebar-create-button" type="button" onClick={onNew}><Plus size={17} /> Create study set</button>
         <div className="sidebar-spacer" />
         <p className="local-workspace-note"><CheckCircle2 size={15} /> Saved locally in this browser</p>
       </aside>
@@ -1854,7 +1857,7 @@ function UploadView({
           })}
         </div>
 
-        <button className="add-paste-section-button add-manual-question-button" type="button" onClick={onAddPasteSection}><span><Plus size={20} /></span><strong>Add question</strong><small>The current question collapses and the new question opens automatically</small></button>
+        <button className={`add-manual-question-button simple-add-question ${pasteSections.length === 0 ? "empty" : ""}`} type="button" onClick={onAddPasteSection}><Plus size={18} /><strong>Add question</strong></button>
 
         {aiConfigured && <label className="switch-row ai-import-switch"><span><Bot size={19} /><span><strong>AI import assistance</strong><small>Review the local extraction, repair clear formatting problems, add confidence notes, and flag uncertain answers before saving.</small></span></span><input type="checkbox" checked={aiEnhanced} onChange={(event) => onAi(event.target.checked)} /></label>}
 
